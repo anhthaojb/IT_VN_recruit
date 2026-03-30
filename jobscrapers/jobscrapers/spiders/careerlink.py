@@ -11,14 +11,14 @@ class CareerlinkSpider(scrapy.Spider):
         pass
         jobs = response.css('.list-group li.list-group-item')
         for job in jobs:
-            href = job.css('.media-body a::attr(href)').get()
-            # job_url=  'careerlink.vn'+href
-            job_url= href
-            yield response.follow(job_url, callback=self.parse_job_page)
+            job_url= job.css('.media-body a::attr(href)').get()
+            if job_url:
+                yield response.follow(job_url, callback=self.parse_job_page)
+        
         page =  response.css('.page-item a::attr(href)').get()
-        pagr_url = 'careerlink.vn'+page
-        yield scrapy.Request(url=pagr_url, callback=self.parse)
-
+        page_url = 'careerlink.vn'+page
+        if page_url:
+            yield scrapy.Request(url=page_url, callback=self.parse)
     
     def parse_job_page(self, response):
         job_item = JobItem()

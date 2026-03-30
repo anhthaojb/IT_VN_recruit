@@ -14,9 +14,7 @@ class CareervietSpider(scrapy.Spider):
         if not jobs:
             return
         for job in jobs:
-            href = job.css('.title h2 a::attr(href)').get()
-            # job_url=  'careerviet.vn'+href
-            job_url= href
+            job_url= job.css('.title h2 a::attr(href)').get()
             yield response.follow(job_url, callback=self.parse_job_page)
         current_url = response.url
 
