@@ -17,7 +17,7 @@ from selenium.common.exceptions import StaleElementReferenceException
 load_dotenv()
 
 # ===== CONFIG =====
-MAX_JOBS_PER_KEYWORD = 1          # số job tối đa mỗi keyword
+MAX_JOBS_PER_KEYWORD = 10          # số job tối đa mỗi keyword
 JOB_DETAIL_WAIT      = 8          # giây chờ detail panel load
 OUTPUT_DIR  = os.path.join("data", "linkedin")
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, f"{date.today().isoformat()}.jsonl")
@@ -304,11 +304,11 @@ def scrape_keyword(driver, keyword, category, seen_urls, f):
         f"?keywords={quote_plus(keyword)}&refresh=true"
     )
     driver.get(url)
-    print(f"\n🔍 [{category}] {keyword!r} → {url}")
+    print(f"\n[{category}] {keyword!r} → {url}")
 
     matched, _ = wait_any_css(driver, SEL_JOB_CARDS, timeout=15)
     if not matched:
-        print("  ⚠️  Job list không load — bỏ qua keyword này")
+        print("Job list không load — bỏ qua keyword này")
         return 0
 
     job_count = 0
@@ -319,7 +319,7 @@ def scrape_keyword(driver, keyword, category, seen_urls, f):
 
         _, cards_now = _get_cards(driver)
         if not cards_now:
-            print("  ⚠️  Không tìm thấy card")
+            print("Không tìm thấy card")
             break
         total_cards = len(cards_now)
 
@@ -343,27 +343,27 @@ def scrape_keyword(driver, keyword, category, seen_urls, f):
                 driver, SEL_DETAIL_LOADED, timeout=JOB_DETAIL_WAIT
             )
             if not matched_detail:
-                print(f"    ⚠️  Detail không load (card {card_index}) — skip")
+                print(f"Detail không load (card {card_index}) — skip")
                 card_index += 1
                 continue
 
             # ── Bỏ qua URL đã scrape ─────────────────────────────
             current_url = driver.current_url
             if current_url in seen_urls:
-                print("    ⏭️  Đã scrape — skip")
+                print("Đã scrape — skip")
                 card_index += 1
                 continue
 
             # ── Parse ─────────────────────────────────────────────
             item = parse_job(driver, keyword, category)
             if not item:
-                print(f"    ⚠️  Parse thất bại (card {card_index}) — skip")
+                print(f" Parse thất bại (card {card_index}) — skip")
                 card_index += 1
                 continue
 
             seen_urls.add(current_url)
             job_count += 1
-            print(f"    ✅ [{job_count}] {item['job_title']}")
+            print(f"[{job_count}] {item['job_title']}")
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
             f.flush()
 
@@ -377,7 +377,7 @@ def scrape_keyword(driver, keyword, category, seen_urls, f):
         anchor = cards_before[0] if cards_before else None
 
         if not _click_next_page(driver):
-            print("  📭 Hết trang — không tìm thấy nút Next")
+            print(" Hết trang — không tìm thấy nút Next")
             break
 
         try:
@@ -416,7 +416,7 @@ def login(driver):
     username = os.getenv("LINKEDIN_USERNAME")
     password = os.getenv("LINKEDIN_PASSWORD")
     if not username or not password:
-        raise ValueError("❌ Thiếu LINKEDIN_USERNAME / LINKEDIN_PASSWORD trong .env")
+        raise ValueError("Thiếu LINKEDIN_USERNAME / LINKEDIN_PASSWORD trong .env")
 
     driver.get("https://www.linkedin.com/login")
     try:
@@ -425,7 +425,7 @@ def login(driver):
         )
     except Exception:
         raise Exception(
-            f"❌ Trang login không load — title: {driver.title!r}, url: {driver.current_url}"
+            f"Trang login không load — title: {driver.title!r}, url: {driver.current_url}"
         )
 
     user_field.clear()
@@ -433,29 +433,29 @@ def login(driver):
 
     pwd = find_first(driver, SEL_PASSWORD)
     if not pwd:
-        raise Exception("❌ Không tìm thấy ô password")
+        raise Exception("Không tìm thấy ô password")
     pwd.clear()
     pwd.send_keys(password)
 
     btn = find_first(driver, SEL_LOGIN_BTN)
     if not btn:
-        raise Exception("❌ Không tìm thấy nút Sign in")
+        raise Exception("Không tìm thấy nút Sign in")
     btn.click()
 
     try:
         WebDriverWait(driver, 30).until(lambda d: "/login" not in d.current_url)
     except Exception:
-        raise Exception(f"❌ Login timeout — URL: {driver.current_url}")
+        raise Exception(f"Login timeout — URL: {driver.current_url}")
 
     current = driver.current_url
     if any(x in current for x in ["/checkpoint", "/challenge", "/uas/login"]):
-        print(f"\n⚠️  LinkedIn yêu cầu xác minh bảo mật — URL: {current}")
+        print(f"\nLinkedIn yêu cầu xác minh bảo mật — URL: {current}")
         input("   Hoàn thành xác minh trên browser rồi nhấn Enter: ")
         current = driver.current_url
         if "/login" in current or "/checkpoint" in current:
-            raise Exception(f"❌ Vẫn chưa login — URL: {current}")
+            raise Exception(f" Vẫn chưa login — URL: {current}")
 
-    print(f"✅ Đăng nhập thành công — {driver.current_url}")
+    print(f"Đăng nhập thành công — {driver.current_url}")
 
 
 # =========================================================
@@ -466,7 +466,7 @@ def main():
     driver = init_driver()
 
     def _exit(sig, frame):
-        print("\n⛔ Ctrl+C — đóng driver...")
+        print("\nđóng driver...")
         try:
             driver.service.process.kill()
         except Exception:
@@ -483,8 +483,8 @@ def main():
 
         # Load seen_urls từ file hôm nay (nếu đã chạy trước đó trong ngày)
         seen_urls = load_seen_urls(OUTPUT_FILE)
-        print(f"📂 File hôm nay: {OUTPUT_FILE}")
-        print(f"📋 Đã load {len(seen_urls)} URL cũ — sẽ bỏ qua khi scrape")
+        print(f"File hôm nay: {OUTPUT_FILE}")
+        print(f"Đã load {len(seen_urls)} URL cũ — sẽ bỏ qua khi scrape")
 
         total = 0
         summary = {}
@@ -501,7 +501,7 @@ def main():
 
         # Tổng kết
         print(f"\n{'='*55}")
-        print(f"🎉 HOÀN THÀNH — {total} job mới → {OUTPUT_FILE}")
+        print(f"HOÀN THÀNH — {total} job mới → {OUTPUT_FILE}")
         print(f"{'='*55}")
         for cat, kw_counts in summary.items():
             cat_total = sum(kw_counts.values())

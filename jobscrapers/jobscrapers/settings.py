@@ -111,11 +111,11 @@ CONCURRENT_REQUESTS = 1
 CONCURRENT_REQUESTS_PER_DOMAIN = 1
 PLAYWRIGHT_BROWSER_TYPE = "chromium"
 PLAYWRIGHT_LAUNCH_OPTIONS = {"headless": True}
-PLAYWRIGHT_CONTEXTS = {
-            "itviec_session": {
-                "ignore_https_errors": True,
-            },
-}
+# PLAYWRIGHT_CONTEXTS = {
+#             "itviec_session": {
+#                 "ignore_https_errors": True,
+#             },
+# }
 
 TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 
