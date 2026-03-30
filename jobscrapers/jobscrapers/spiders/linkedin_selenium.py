@@ -1,6 +1,7 @@
 import time
 import os
 import json
+import re
 import signal
 from datetime import datetime
 from urllib.parse import quote_plus
@@ -16,7 +17,7 @@ load_dotenv()
 
 # ===== CONFIG =====
 SEARCH_KEYWORD  = "data scientist"
-MAX_JOBS        = 10
+MAX_JOBS        = 3
 JOB_DETAIL_WAIT = 8
 OUTPUT_FILE     = "linkedin_jobs.jsonl"
 
@@ -105,20 +106,63 @@ def parse_job(driver):
             about_job = els[0].text.strip()
             break
 
-    # About the company
-    about_company = ""
-    for sel in ["section.jobs-company div.jobs-company__box", "div.jobs-company__box"]:
-        els = driver.find_elements(By.CSS_SELECTOR, sel)
-        if els:
-            about_company = els[0].text.strip()
-            break
+    # Location + job_posted_at — dùng regex, không phụ thuộc thứ tự DOM
+    location = ""
+    job_posted_at = ""
+    tertiary = driver.find_elements(
+        By.CSS_SELECTOR,
+        "div.job-details-jobs-unified-top-card__tertiary-description-container span.tvm__text--low-emphasis"
+    )
+    tokens = [s.text.strip() for s in tertiary if s.text.strip() and s.text.strip() != "·"]
+
+    # Pattern thời gian: "2 hours ago", "1 month ago", "Reposted 3 days ago", v.v.
+    TIME_PAT = re.compile(
+        r"(?:reposted\s+)?(?:\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago|just now)",
+        re.IGNORECASE
+    )
+    # Pattern location: có ít nhất một dấu phẩy VÀ không khớp time pattern
+    LOC_PAT = re.compile(r".+,.+")
+
+    for token in tokens:
+        if not job_posted_at and TIME_PAT.search(token):
+            job_posted_at = token
+        elif not location and LOC_PAT.match(token) and not TIME_PAT.search(token):
+            location = token
+
+    # Company title
+    company_title = ""
+    els = driver.find_elements(By.CSS_SELECTOR, 'a[data-view-name="job-details-about-company-name-link"]')
+    if els:
+        company_title = els[0].text.strip()
+
+    # Company industry + size — nằm trong div.t-14.mt5
+    company_industry = ""
+    company_size = ""
+    info_divs = driver.find_elements(By.CSS_SELECTOR, "div.jobs-company__box div.t-14.mt5")
+    if info_divs:
+        spans = info_divs[0].find_elements(By.CSS_SELECTOR, "span.jobs-company__inline-information")
+
+        # Company size: span đầu tiên (vd: "1,001-5,000 employees")
+        if len(spans) >= 1:
+            company_size = spans[0].text.strip()
+
+        # Industry: text trực tiếp trong div, bỏ phần text của các span
+        raw = info_divs[0].text.strip()
+        industry_raw = raw
+        for sp in spans:
+            industry_raw = industry_raw.replace(sp.text.strip(), "")
+        company_industry = industry_raw.strip()
 
     return {
         "website"          : "linkedin",
         "job_url"          : driver.current_url,
         "job_title"        : job_title,
+        "location"         : location,
+        "job_posted_at"    : job_posted_at,
         "raw_about_job"    : about_job,
-        "raw_about_company": about_company,
+        "company_title"    : company_title,
+        "company_industry" : company_industry,
+        "company_size"     : company_size,
         "scraped_at"       : datetime.now().isoformat(),
     }
 
