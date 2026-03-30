@@ -24,7 +24,13 @@ MAX_PAGES        = 3
 # ===== SELECTORS =====
 SELECTORS_PASSWORD  = [(By.ID, "password"), (By.NAME, "session_password"), (By.XPATH, '//input[@type="password"]')]
 SELECTORS_LOGIN_BTN = [(By.XPATH, '//button[@type="submit"]'), (By.XPATH, '//button[contains(.,"Sign in")]')]
-SELECTORS_SEARCH_BOX= [(By.XPATH, '//input[@aria-label="Search"]'), (By.XPATH, '//input[contains(@class,"search-global-typeahead")]')]
+SELECTORS_SEARCH_BOX = [
+    (By.CSS_SELECTOR, 'input[role="combobox"]'),
+    (By.XPATH,        '//input[@aria-autocomplete="list"]'),
+    (By.CSS_SELECTOR, '#global-nav-search input'),
+    (By.CSS_SELECTOR, 'input[placeholder*="Search"]'),
+    (By.XPATH,        '//input[contains(@class,"search-global-typeahead")]'),
+]
 SELECTORS_JOBS_BTN  = [(By.XPATH, '//a[contains(@href,"/jobs")]'), (By.XPATH, '//button[contains(@aria-label,"Jobs")]')]
 SELECTORS_JOBS_SEARCH=[
     (By.CSS_SELECTOR, 'input[componentkey="jobSearchBox"]'),
@@ -101,26 +107,55 @@ class LinkedinSpider(scrapy.Spider):
     # parse  –  list page  (mirrors CareerlinkSpider.parse)
     # ------------------------------------------------------------------
 
+    # Selector ưu tiên cho job card và job detail — thêm vào đây nếu LinkedIn đổi class
+    JOB_CARD_SELECTORS = [
+        "li.jobs-search-results__list-item",
+        "li.scaffold-layout__list-item",
+        "div.job-card-container",
+        "div[data-job-id]",
+    ]
+    JOB_DETAIL_SELECTORS = [
+        "div.jobs-description-content__text",
+        "div.jobs-description__content",
+        "div#job-details",
+        "article.jobs-description",
+    ]
+
+    def _find_job_cards(self):
+        for sel in self.JOB_CARD_SELECTORS:
+            cards = self.driver.find_elements(By.CSS_SELECTOR, sel)
+            if cards:
+                self.logger.info(f"🃏 Found {len(cards)} cards via: {sel}")
+                return cards
+        return []
+
+    def _wait_for_job_detail(self):
+        for sel in self.JOB_DETAIL_SELECTORS:
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+                )
+                return True
+            except Exception:
+                continue
+        return False
+
     def parse(self, response):
         """Iterate job cards on the current search-results page."""
         for page_num in range(1, MAX_PAGES + 1):
             self.logger.info(f"📄 Page {page_num}")
 
-            # Re-read live DOM into a fresh Scrapy response
-            response = build_scrapy_response(self.driver)
-
-            job_cards = self.driver.find_elements(
-                By.CSS_SELECTOR, "li.jobs-search-results__list-item"
-            )
+            job_cards = self._find_job_cards()
+            if not job_cards:
+                self.logger.warning("⚠️  Không tìm thấy job card nào — dừng lại")
+                break
 
             for card in job_cards:
                 try:
                     card.click()
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located(
-                            (By.CSS_SELECTOR, "div.jobs-description-content__text")
-                        )
-                    )
+                    if not self._wait_for_job_detail():
+                        self.logger.warning("⚠️  Job detail không load — skip")
+                        continue
                     detail_response = build_scrapy_response(self.driver)
                     yield from self.parse_job_page(detail_response)
 
@@ -252,26 +287,40 @@ class LinkedinSpider(scrapy.Spider):
         self.logger.info(f"✅ Login successful — URL: {self.driver.current_url}")
 
     def _go_to_jobs(self):
-        jobs_btn = find_element_fallback(self.driver, SELECTORS_JOBS_BTN)
-        jobs_btn.click()
-        WebDriverWait(self.driver, 10).until(lambda d: "jobs" in d.current_url)
-        WebDriverWait(self.driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "ul.jobs-search-results__list"))
-        )
-        self.logger.info("✅ Jobs page loaded")
+        pass  # Gộp vào _search_jobs — navigate thẳng bằng URL
 
     def _search_jobs(self, keyword):
-        search_box = find_element_fallback(self.driver, SELECTORS_JOBS_SEARCH)
-        self.driver.execute_script("arguments[0].click();", search_box)
-        time.sleep(1)
-        search_box.send_keys(keyword)
-        search_box.send_keys(Keys.ENTER)
-        WebDriverWait(self.driver, 15).until(
-            EC.presence_of_element_located(
-                (By.CSS_SELECTOR, "li.jobs-search-results__list-item")
-            )
-        )
-        self.logger.info(f"✅ Job search loaded: '{keyword}'")
+        from urllib.parse import quote_plus
+
+        # Navigate thẳng vào URL search — không cần click nav hay tìm search box
+        search_url = f"https://www.linkedin.com/jobs/search/?keywords={quote_plus(keyword)}&refresh=true"
+        self.driver.get(search_url)
+        self.logger.info(f"🔍 Navigating to: {search_url}")
+
+        # Thử nhiều selector vì LinkedIn hay đổi class
+        JOB_LIST_SELECTORS = [
+            "li.jobs-search-results__list-item",
+            "li.scaffold-layout__list-item",
+            "div.job-card-container",
+            "div[data-job-id]",
+        ]
+
+        loaded = False
+        for sel in JOB_LIST_SELECTORS:
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+                )
+                self.logger.info(f"✅ Job list loaded via selector: {sel}")
+                loaded = True
+                break
+            except Exception:
+                continue
+
+        if not loaded:
+            # Dump page title để debug
+            self.logger.warning(f"⚠️  Không tìm thấy job list. Page title: {self.driver.title} | URL: {self.driver.current_url}")
+            raise Exception("❌ Job search page did not load")
 
     def _go_next_page(self, current_jobs):
         try:
