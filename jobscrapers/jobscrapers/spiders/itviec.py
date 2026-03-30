@@ -3,7 +3,7 @@ import scrapy
 from scrapy_playwright.page import PageMethod
 from datetime import datetime
 from jobscrapers.items import JobItem
-
+from dotenv import load_dotenv
 
 BLOCKED_DOMAINS = {
     "googleads", "doubleclick", "google-analytics",
@@ -25,9 +25,11 @@ def should_abort_request(request):
 class ItviecSpider(scrapy.Spider):
     name = "itviec"
     allowed_domains = ["itviec.com"]
+    load_dotenv()
 
-    itviec_email    = os.environ.get("ITVIEC_EMAIL",    "technicalwriting20241@gmail.com")
-    itviec_password = os.environ.get("ITVIEC_PASSWORD", "Testchaycode@24")
+# lấy biến môi trường
+    itviec_email    = os.environ.get("email")
+    itviec_password = os.environ.get("it_viec_password")
 
     custom_settings = {
         "PLAYWRIGHT_ABORT_REQUEST": should_abort_request,
@@ -68,7 +70,6 @@ class ItviecSpider(scrapy.Spider):
 
     # ─────────────────────────────────────────
     # BƯỚC 2: Thu thập link + phân trang
-    # (giống Careerlink — chỉ lấy link, không scrape detail ở đây)
     # ─────────────────────────────────────────
     def parse(self, response):
         jobs = response.css("div.job-card")
