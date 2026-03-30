@@ -1,45 +1,46 @@
 import scrapy
 import time
 import os
+import signal
 from datetime import datetime
+from urllib.parse import quote_plus
 from scrapy.http import HtmlResponse
+from scrapy.exceptions import CloseSpider
 from dotenv import load_dotenv
-
-load_dotenv()
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-from jobscrapers.items import JobItem
+load_dotenv()
 
 
 # ===== CONFIG =====
-SEARCH_KEYWORD   = "data scientist"
-MAX_PAGES        = 3
+SEARCH_KEYWORD  = "data scientist"
+MAX_JOBS        = 10          # tự dừng sau đúng 150 job
+JOB_DETAIL_WAIT = 8            # giây chờ detail load
+
 
 # ===== SELECTORS =====
-SELECTORS_PASSWORD  = [(By.ID, "password"), (By.NAME, "session_password"), (By.XPATH, '//input[@type="password"]')]
-SELECTORS_LOGIN_BTN = [(By.XPATH, '//button[@type="submit"]'), (By.XPATH, '//button[contains(.,"Sign in")]')]
-SELECTORS_SEARCH_BOX = [
-    (By.CSS_SELECTOR, 'input[role="combobox"]'),
-    (By.XPATH,        '//input[@aria-autocomplete="list"]'),
-    (By.CSS_SELECTOR, '#global-nav-search input'),
-    (By.CSS_SELECTOR, 'input[placeholder*="Search"]'),
-    (By.XPATH,        '//input[contains(@class,"search-global-typeahead")]'),
+SEL_PASSWORD  = [(By.ID, "password"), (By.XPATH, '//input[@type="password"]')]
+SEL_LOGIN_BTN = [(By.XPATH, '//button[@type="submit"]'), (By.XPATH, '//button[contains(.,"Sign in")]')]
+SEL_JOB_CARDS = [
+    "div[data-job-id]",                    # selector ổn định nhất — luôn có khi card render
+    "li.scaffold-layout__list-item div.job-card-container",
+    "li.jobs-search-results__list-item",
 ]
-SELECTORS_JOBS_BTN  = [(By.XPATH, '//a[contains(@href,"/jobs")]'), (By.XPATH, '//button[contains(@aria-label,"Jobs")]')]
-SELECTORS_JOBS_SEARCH=[
-    (By.CSS_SELECTOR, 'input[componentkey="jobSearchBox"]'),
-    (By.CSS_SELECTOR, 'input[data-testid="typeahead-input"]'),
-    (By.XPATH, '//input[contains(@placeholder,"Title, skill or Company")]'),
+SEL_DETAIL_LOADED = [
+    "div#job-details",                     # id cố định từ HTML thực tế
+    "div.jobs-description-content__text",
+    "div.jobs-description__content",
+    "article.jobs-description",
 ]
-SELECTORS_NEXT_PAGE = [
+SEL_NEXT_PAGE = [
+    (By.CSS_SELECTOR, 'button[aria-label="View next page"]'),   # từ HTML thực tế
     (By.CSS_SELECTOR, 'button.jobs-search-pagination__button--next'),
-    (By.XPATH, '//button[contains(@aria-label,"next")]'),
+    (By.XPATH,        '//button[contains(@aria-label,"next")]'),
 ]
 
 
@@ -47,25 +48,38 @@ SELECTORS_NEXT_PAGE = [
 #  Helpers
 # =========================================================
 
-def find_element_fallback(driver, selectors, timeout=10):
+def wait_any(driver, css_selectors, timeout=10):
+    """Chờ đến khi bất kỳ selector nào xuất hiện."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for sel in css_selectors:
+            els = driver.find_elements(By.CSS_SELECTOR, sel)
+            if els:
+                return sel, els
+        time.sleep(0.5)
+    return None, []
+
+
+def find_first(driver, selectors_list, timeout=8):
+    """selectors_list: list of (By, selector). Trả về element đầu tiên tìm thấy."""
     wait = WebDriverWait(driver, timeout)
-    for by, selector in selectors:
+    for by, sel in selectors_list:
         try:
-            el = wait.until(EC.presence_of_element_located((by, selector)))
+            el = wait.until(EC.presence_of_element_located((by, sel)))
             if el.is_displayed():
                 return el
         except Exception:
             continue
-    raise Exception(f"Element not found among selectors: {selectors}")
+    return None
 
 
-def build_scrapy_response(driver, url=None):
-    """Wrap current Selenium page_source into a Scrapy HtmlResponse."""
-    return HtmlResponse(
-        url=url or driver.current_url,
-        body=driver.page_source,
-        encoding="utf-8",
-    )
+def scrapy_response(driver):
+    return HtmlResponse(url=driver.current_url, body=driver.page_source, encoding="utf-8")
+
+
+def clean_text(texts):
+    """Gộp list string thành một đoạn text sạch."""
+    return " ".join(t.strip() for t in texts if t.strip())
 
 
 # =========================================================
@@ -73,25 +87,33 @@ def build_scrapy_response(driver, url=None):
 # =========================================================
 
 class LinkedinSpider(scrapy.Spider):
-    name = "linkedin"
+    name            = "linkedin"
     allowed_domains = ["linkedin.com"]
-
-    # Selenium driver is shared across the spider lifetime
-    driver = None
+    driver          = None
+    _job_count      = 0
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def start_requests(self):
-        """Bootstrap: launch Selenium, log in, navigate to job results."""
         self.driver = self._init_driver()
-        self._login()
-        self._go_to_jobs()
-        self._search_jobs(SEARCH_KEYWORD)
 
-        # Hand off to Scrapy by yielding a dummy request whose callback
-        # immediately reads from the already-loaded Selenium page.
+        # Ctrl+C: kill chromedriver process trực tiếp, không dùng driver.quit()
+        # vì quit() gửi HTTP request — nếu chromedriver đã chết thì retry mãi không thoát
+        def _exit(sig, frame):
+            print("\n⛔ Ctrl+C — force kill...")
+            try:
+                if self.driver and self.driver.service.process:
+                    self.driver.service.process.kill()
+            except Exception:
+                pass
+            os._exit(0)
+        signal.signal(signal.SIGINT, _exit)
+
+        self._login()
+        self._go_to_search()
+
         yield scrapy.Request(
             url=self.driver.current_url,
             callback=self.parse,
@@ -100,243 +122,169 @@ class LinkedinSpider(scrapy.Spider):
 
     def closed(self, reason):
         if self.driver:
-            self.driver.quit()
-            self.logger.info("🛑 Selenium driver closed")
-
-    # ------------------------------------------------------------------
-    # parse  –  list page  (mirrors CareerlinkSpider.parse)
-    # ------------------------------------------------------------------
-
-    # Selector ưu tiên cho job card và job detail — thêm vào đây nếu LinkedIn đổi class
-    JOB_CARD_SELECTORS = [
-        "li.jobs-search-results__list-item",
-        "li.scaffold-layout__list-item",
-        "div.job-card-container",
-        "div[data-job-id]",
-    ]
-    JOB_DETAIL_SELECTORS = [
-        "div.jobs-description-content__text",
-        "div.jobs-description__content",
-        "div#job-details",
-        "article.jobs-description",
-    ]
-
-    def _find_job_cards(self):
-        for sel in self.JOB_CARD_SELECTORS:
-            cards = self.driver.find_elements(By.CSS_SELECTOR, sel)
-            if cards:
-                self.logger.info(f"🃏 Found {len(cards)} cards via: {sel}")
-                return cards
-        return []
-
-    def _wait_for_job_detail(self):
-        for sel in self.JOB_DETAIL_SELECTORS:
             try:
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
-                )
-                return True
+                # Dùng timeout ngắn — tránh treo khi chromedriver đã chết
+                self.driver.service.process.kill()
             except Exception:
-                continue
-        return False
+                pass
+            self.logger.info(f"🛑 Driver đóng — {reason} — đã scrape {self._job_count} job")
+
+    # ------------------------------------------------------------------
+    # parse — vòng lặp trang
+    # ------------------------------------------------------------------
 
     def parse(self, response):
-        """Iterate job cards on the current search-results page."""
-        for page_num in range(1, MAX_PAGES + 1):
-            self.logger.info(f"📄 Page {page_num}")
+        page = 1
+        while True:
+            self.logger.info(f"📄 Trang {page} | {self._job_count}/{MAX_JOBS} job")
 
-            job_cards = self._find_job_cards()
-            if not job_cards:
-                self.logger.warning("⚠️  Không tìm thấy job card nào — dừng lại")
+            matched_sel, cards = wait_any(self.driver, SEL_JOB_CARDS, timeout=12)
+            if not cards:
+                self.logger.warning("⚠️  Không tìm thấy job card — dừng")
                 break
 
-            for card in job_cards:
+            for card in cards:
+                # Kiểm tra đủ số lượng TRƯỚC khi click
+                if self._job_count >= MAX_JOBS:
+                    self.logger.info(f"✅ Đủ {MAX_JOBS} job — đóng spider")
+                    raise CloseSpider(f"reached_{MAX_JOBS}_jobs")
+
                 try:
+                    # Scroll vào view — bắt buộc vì LinkedIn lazy-render (occlude) các card ngoài viewport
+                    self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
+                    time.sleep(0.4)   # chờ LinkedIn render card vừa scroll vào
                     card.click()
-                    if not self._wait_for_job_detail():
-                        self.logger.warning("⚠️  Job detail không load — skip")
+                    time.sleep(1)
+
+                    matched_detail, _ = wait_any(self.driver, SEL_DETAIL_LOADED, timeout=JOB_DETAIL_WAIT)
+                    if not matched_detail:
+                        self.logger.warning("⚠️  Detail không load — skip")
                         continue
-                    detail_response = build_scrapy_response(self.driver)
-                    yield from self.parse_job_page(detail_response)
 
+                    item = self._parse_raw(scrapy_response(self.driver))
+                    if item:
+                        self._job_count += 1
+                        yield item
+
+                except CloseSpider:
+                    raise
                 except Exception as e:
-                    self.logger.warning(f"⚠️  Skip job: {e}")
+                    self.logger.warning(f"⚠️  Skip: {e}")
 
-            # ── next page ──────────────────────────────────────────────
-            if page_num < MAX_PAGES:
-                if not self._go_next_page(job_cards):
-                    self.logger.info("❌ No more pages")
-                    break
+            # ── next page ─────────────────────────────────────────────
+            next_btn = find_first(self.driver, SEL_NEXT_PAGE, timeout=5)
+            if not next_btn:
+                self.logger.info("📭 Hết trang")
+                break
+
+            try:
+                first_card = cards[0]
+                next_btn.click()
+                WebDriverWait(self.driver, 10).until(EC.staleness_of(first_card))
+                time.sleep(2)
+                page += 1
+            except Exception as e:
+                self.logger.warning(f"⚠️  Không qua được trang tiếp: {e}")
+                break
 
     # ------------------------------------------------------------------
-    # parse_job_page  –  detail page  (mirrors CareerlinkSpider.parse_job_page)
+    # _parse_raw — chỉ thu raw text 3 phần chính
     # ------------------------------------------------------------------
 
-    def parse_job_page(self, response):
-        job_item = JobItem()
+    def _parse_raw(self, resp):
+        """
+        Thu đúng 3 phần raw — xử lý cấu trúc chi tiết để sau:
+          job_title         : tên công việc
+          raw_about_job     : toàn bộ phần About the job
+          raw_about_company : toàn bộ phần About the company
+        """
 
-        job_item["website"]          = "linkedin"
-        job_item["job_url"]          = response.url
-
-        # ── Core fields ──────────────────────────────────────────────
-        job_item["job_title"]        = response.css("h1::text").get("").strip()
-        job_item["company_title"]    = (
-            response.css("a[href*='company']::text").get("")
-            or response.css(".job-details-jobs-unified-top-card__company-name a::text").get("")
+        # 1. Job title
+        job_title = (
+            resp.css("h1.job-details-jobs-unified-top-card__job-title::text").get()
+            or resp.css("h1::text").get()
+            or ""
         ).strip()
-        job_item["location"]         = response.css(
-            "span.tvm__text::text, "
-            ".job-details-jobs-unified-top-card__bullet::text"
-        ).get("").strip()
 
-        # ── Metadata chips (level / job-type / work-mode) ─────────────
-        chips = response.css(
-            "li.job-details-jobs-unified-top-card__job-insight span::text, "
-            "span.ui-label::text"
-        ).getall()
-        chips = [c.strip() for c in chips if c.strip()]
+        if not job_title:
+            return None  # trang chưa load đủ
 
-        job_item["level"]            = self._find_chip(chips, ["Internship", "Entry level",
-                                                                "Associate", "Mid-Senior",
-                                                                "Director", "Executive"])
-        job_item["job_type"]         = self._find_chip(chips, ["Full-time", "Part-time",
-                                                                "Contract", "Temporary",
-                                                                "Volunteer", "Other"])
-        job_item["work_mode"]        = self._find_chip(chips, ["On-site", "Hybrid", "Remote"])
+        # 2. About the job — id="job-details" là container chính xác từ HTML
+        about_job = clean_text(
+            resp.css("div#job-details *::text").getall()
+            or resp.css("div.jobs-description-content__text *::text").getall()
+            or resp.css("article.jobs-description *::text").getall()
+        )
 
-        # ── Salary / compensation ─────────────────────────────────────
-        job_item["compensation"]     = response.css(
-            "div.salary--tiers span::text, "
-            ".compensation__salary::text"
-        ).get("").strip()
+        # 3. About the company — section.jobs-company > div.jobs-company__box
+        about_company = clean_text(
+            resp.css("section.jobs-company div.jobs-company__box *::text").getall()
+            or resp.css("div.jobs-company__box *::text").getall()
+            or resp.css("section[data-view-name='job-details-about-company-module'] *::text").getall()
+        )
 
-        # ── Company extras ────────────────────────────────────────────
-        job_item["company_size"]     = response.xpath(
-            '//span[contains(text(),"employees")]/text()'
-        ).get("").strip()
-        job_item["company_industry"] = response.css(
-            ".job-details-jobs-unified-top-card__job-insight--highlight span::text"
-        ).get("").strip()
-
-        # ── Fields not surfaced on LinkedIn ──────────────────────────
-        job_item["experience"]       = ""
-        job_item["job_category"]     = ""
-        job_item["number_recruit"]   = ""
-        job_item["education_level"]  = ""
-        job_item["job_deadline"]     = ""
-
-        # ── Description / Requirements ────────────────────────────────
-        full_desc = response.css(
-            "div.jobs-description-content__text *::text"
-        ).getall()
-        job_item["job_description"]  = [t.strip() for t in full_desc if t.strip()]
-        job_item["job_requirement"]  = []   # LinkedIn merges desc+requirements
-
-        # ── Dates ─────────────────────────────────────────────────────
-        job_item["job_posted_at"]    = response.css(
-            "span.jobs-unified-top-card__posted-date::text, "
-            "span.tvm__text--neutral::text"
-        ).get("").strip()
-        job_item["scraped_at"]       = datetime.now()
-
-        yield job_item
+        return {
+            "website"          : "linkedin",
+            "job_url"          : resp.url,
+            "job_title"        : job_title,
+            "raw_about_job"    : about_job,
+            "raw_about_company": about_company,
+            "scraped_at"       : datetime.now().isoformat(),
+        }
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
     def _init_driver(self):
-        options = Options()
-        options.add_argument("--start-maximized")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option("useAutomationExtension", False)
-
-        driver = webdriver.Chrome(options=options)
-        driver.execute_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
+        opts = Options()
+        opts.add_argument("--start-maximized")
+        opts.add_argument("--disable-blink-features=AutomationControlled")
+        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+        opts.add_experimental_option("useAutomationExtension", False)
+        driver = webdriver.Chrome(options=opts)
+        driver.execute_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
         self.logger.info("✅ Driver initialized")
         return driver
 
     def _login(self):
         username = os.getenv("LINKEDIN_USERNAME")
         password = os.getenv("LINKEDIN_PASSWORD")
-
         if not username or not password:
-            raise ValueError("❌ LINKEDIN_USERNAME hoặc LINKEDIN_PASSWORD chưa được set trong .env")
+            raise ValueError("❌ Thiếu LINKEDIN_USERNAME / LINKEDIN_PASSWORD trong .env")
 
         self.driver.get("https://www.linkedin.com/login")
         time.sleep(3)
 
         self.driver.find_element(By.ID, "username").send_keys(username)
-        find_element_fallback(self.driver, SELECTORS_PASSWORD).send_keys(password)
-        find_element_fallback(self.driver, SELECTORS_LOGIN_BTN).click()
+        pwd = find_first(self.driver, SEL_PASSWORD)
+        if not pwd:
+            raise Exception("❌ Không tìm thấy ô password")
+        pwd.send_keys(password)
 
-        # Chờ URL thoát khỏi trang login (không phụ thuộc selector search box)
+        btn = find_first(self.driver, SEL_LOGIN_BTN)
+        if not btn:
+            raise Exception("❌ Không tìm thấy nút Sign in")
+        btn.click()
+
         try:
             WebDriverWait(self.driver, 20).until(
                 lambda d: "/login" not in d.current_url and "/checkpoint" not in d.current_url
             )
         except Exception:
-            current_url = self.driver.current_url
-            if "/checkpoint" in current_url or "/challenge" in current_url:
-                raise Exception("⚠️  LinkedIn yêu cầu xác minh bảo mật — hãy hoàn thành thủ công rồi chạy lại.")
-            raise Exception(f"❌ Login timeout — URL hiện tại: {current_url}")
+            url = self.driver.current_url
+            if any(x in url for x in ["/checkpoint", "/challenge"]):
+                raise Exception("⚠️  LinkedIn yêu cầu xác minh — hoàn thành thủ công rồi chạy lại")
+            raise Exception(f"❌ Login timeout — URL: {url}")
 
-        self.logger.info(f"✅ Login successful — URL: {self.driver.current_url}")
+        self.logger.info(f"✅ Đăng nhập thành công — {self.driver.current_url}")
 
-    def _go_to_jobs(self):
-        pass  # Gộp vào _search_jobs — navigate thẳng bằng URL
+    def _go_to_search(self):
+        url = f"https://www.linkedin.com/jobs/search/?keywords={quote_plus(SEARCH_KEYWORD)}&refresh=true"
+        self.driver.get(url)
+        self.logger.info(f"🔍 {url}")
 
-    def _search_jobs(self, keyword):
-        from urllib.parse import quote_plus
-
-        # Navigate thẳng vào URL search — không cần click nav hay tìm search box
-        search_url = f"https://www.linkedin.com/jobs/search/?keywords={quote_plus(keyword)}&refresh=true"
-        self.driver.get(search_url)
-        self.logger.info(f"🔍 Navigating to: {search_url}")
-
-        # Thử nhiều selector vì LinkedIn hay đổi class
-        JOB_LIST_SELECTORS = [
-            "li.jobs-search-results__list-item",
-            "li.scaffold-layout__list-item",
-            "div.job-card-container",
-            "div[data-job-id]",
-        ]
-
-        loaded = False
-        for sel in JOB_LIST_SELECTORS:
-            try:
-                WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
-                )
-                self.logger.info(f"✅ Job list loaded via selector: {sel}")
-                loaded = True
-                break
-            except Exception:
-                continue
-
-        if not loaded:
-            # Dump page title để debug
-            self.logger.warning(f"⚠️  Không tìm thấy job list. Page title: {self.driver.title} | URL: {self.driver.current_url}")
-            raise Exception("❌ Job search page did not load")
-
-    def _go_next_page(self, current_jobs):
-        try:
-            next_btn = find_element_fallback(self.driver, SELECTORS_NEXT_PAGE, timeout=5)
-            next_btn.click()
-            WebDriverWait(self.driver, 10).until(EC.staleness_of(current_jobs[0]))
-            time.sleep(2)
-            return True
-        except Exception:
-            return False
-
-    @staticmethod
-    def _find_chip(chips: list, candidates: list) -> str:
-        """Return the first chip value that matches one of the candidate strings."""
-        for chip in chips:
-            for c in candidates:
-                if c.lower() in chip.lower():
-                    return chip
-        return ""
+        matched, _ = wait_any(self.driver, SEL_JOB_CARDS, timeout=15)
+        if not matched:
+            raise Exception(f"❌ Job list không load — title: {self.driver.title}")
+        self.logger.info(f"✅ Sẵn sàng ({matched})")
