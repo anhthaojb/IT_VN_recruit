@@ -3,6 +3,7 @@ __pycache__/
 .env
 *.csv
 *.json
+*.jsonl
 *.log
 # Nếu dùng database local, đừng đẩy file db đi
 *.sqlite3
