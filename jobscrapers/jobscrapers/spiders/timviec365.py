@@ -1,5 +1,7 @@
 import scrapy
-
+from scrapy_playwright.page import PageMethod
+from datetime import datetime
+from jobscrapers.items import JobItem
 
 class Timviec365Spider(scrapy.Spider):
     name = "timviec365"
@@ -21,24 +23,26 @@ class Timviec365Spider(scrapy.Spider):
         job_item = JobItem()
         job_item['website'] = 'timviec365'
         job_item['job_url'] = response.url
-   
-        job_item['job_title'] = response.css('h1::text').get()
-        job_item['compensation'] = response.xpath("//div[div[text()='Mức lương']]/div[contains(@class,'text-14')]/text()").get()
-        job_item['location'] = response.xpath("//div[div[text()='Khu vực tuyển']]//a/span/text()").get()
-        job_item['experience'] = response.xpath("//div[div[text()='Kinh nghiệm']]/div[contains(@class,'text-14')]/text()").get()
-        job_item['job_deadline'] = response.xpath("//div[contains(text(),'Hạn nộp hồ sơ')]/following-sibling::div[1]/text()").get()
+        job_item['job_title'] = response.css('.boxTitleNameNtd h1::text').get()
 
-        job_item['job_posted_at'] = response.xpath("//div[./div[text()='Ngày đăng']]/div[2]/text()").get()
-        job_item['level'] = response.xpath("//div[./div[text()='Cấp bậc']]/div[2]/text()").get()
-        job_item['number_recruit'] = response.xpath("//div[./div[text()='Số lượng tuyển']]/div[2]/text()").get()
-        job_item['job_type'] = response.xpath("//div[./div[text()='Hình thức làm việc']]/div[2]/text()").get()
-        job_item['company_industry'] = response.xpath("//div[./div[text()='Ngành nghề']]/div[2]//a/text()").getall()
-        job_item['job_category']    =''
-        job_item['job_description'] = response.xpath("//h2[contains(text(),'Mô tả công việc')]/following-sibling::div[1]//text()").getall()
-        job_item['job_requirement'] = response.xpath("//h2[contains(text(),'Yêu cầu công việc')]/following-sibling::div[1]//text()").getall()
-        job_item['work_mode'] = ''
-        job_item['education_level'] = ''
-        job_item['company_title'] = response.xpath("//i[contains(@class,'svicon-users')]/ancestor::div[contains(@class,'flex flex-col gap-3')]//a[@title]/div/text()").get()
-        job_item['company_size'] = response.xpath("//i[contains(@class,'svicon-users')]/following-sibling::div/text()").get()
-        job_item['scraped_at'] = datetime.now()
-        yield job_item
+        job_item['location'] = response.xpath("//p[text()='Địa điểm']/following-sibling::p/text()").get()
+        job_item['experience']= response.xpath("//p[text()='Kinh nghiệm']/following-sibling::p/text()").get()
+        job_item['compensation']=  response.css('.valContentSalary.txtSalaryNew::text').get()
+        job_item['job_type'] = response.xpath("//p[text()='Hình thức làm việc']/following-sibling::p/text()").get()
+        job_item['work_mode']='',
+        job_item['level']= response.xpath("//p[text()='Chức vụ']/following-sibling::p/text()").get()   
+        job_item['job_category']=response.xpath("//p[text()='Lĩnh vực: ']/following-sibling::div//a/text()").getall()
+        job_item['number_recruit']=response.xpath("//p[text()='Số lượng cần tuyển']/following-sibling::p/text()").get(),
+        job_item['education_level']= response.xpath("//p[text()='Bằng cấp']/following-sibling::p/text()").get()
+        job_item['job_description']=response.xpath("//h2[text()='Mô tả công việc']/ancestor::div[@class='itemInfoSpecific']//div[@class='valInfoSpecific']//text()").getall()
+        #chưa lấy đc
+        job_item['job_requirement']=response.xpath("//p[text()='Lĩnh vực: ']/following-sibling::div//a/text()").getall()
+        job_item['job_posted_at']=response.xpath("(//p[text()='Cập nhật']/following-sibling::p//text())[2]").get() #ngày cập nhật :)  
+        job_item['job_deadline']= response.css('.valHanNop::text').get()
+        job_item['scraped_at'] = datetime.now()   
+        # company_url =response.css('.boxTitleNameNtd a::attr(href)').get()
+        job_item['company_title'] = response.css('.boxTitleNameNtd a::text').get()
+        job_item['company_size'] =''
+        job_item['company_industry']=''
+        yield job_item 
+        
