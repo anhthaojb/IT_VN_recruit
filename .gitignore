@@ -1,0 +1,8 @@
+__pycache__/
+.venv/
+.env
+*.csv
+*.json
+*.log
+# Nếu dùng database local, đừng đẩy file db đi
+*.sqlite3
