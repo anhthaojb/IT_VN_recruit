@@ -40,7 +40,6 @@ class Timviec365Spider(scrapy.Spider):
         job_item['job_posted_at']=response.xpath("(//p[text()='Cập nhật']/following-sibling::p//text())[2]").get() #ngày cập nhật :)  
         job_item['job_deadline']= response.css('.valHanNop::text').get()
         job_item['scraped_at'] = datetime.now()   
-        # company_url =response.css('.boxTitleNameNtd a::attr(href)').get()
         job_item['company_title'] = response.css('.boxTitleNameNtd a::text').get()
         job_item['company_size'] =''
         job_item['company_industry']=''
