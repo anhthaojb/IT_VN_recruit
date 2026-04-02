@@ -8,57 +8,112 @@ class TopcvSpider(scrapy.Spider):
     name = "topcv"
     allowed_domains = ["topcv.vn"]
 
-    BASE_URL = "https://www.topcv.vn/tim-viec-lam-cong-nghe-thong-tin-cr257"
+    BASE_URL    = "https://www.topcv.vn/tim-viec-lam-cong-nghe-thong-tin-cr257"
     PAGE_PARAMS = "?sort=newp&page={page}&category_family=r257"
-    # USER_AGENTS = [
-    #     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    #     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    #     "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    #     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edg/122.0.0.0",
-    #     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
-    #     "Mozilla/5.0 (Macintosh; Intel Mac OS X 13.5; rv:124.0) Gecko/20100101 Firefox/124.0",
-    #     "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-    #     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-    # ]
-    # def _random_ua(self):
-    #     return {"User-Agent": random.choice(self.USER_AGENTS)}
+
+    # ------------------------------------------------------------------
+    # Khởi tạo — đọc mode từ settings
+    # ------------------------------------------------------------------
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stopped  = False   # flag báo hiệu đã gặp job cũ → dừng
+        self.max_page = 1
+
+    def _get_mode(self):
+        """Đọc CRAWL_MODE từ settings. Mặc định: 'daily'."""
+        return getattr(self, "crawler", None) and \
+               self.crawler.settings.get("CRAWL_MODE", "daily") or "daily"
+
+    # ------------------------------------------------------------------
+    # Helpers kiểm tra job cũ
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_old(posted_text: str) -> bool:
+        """
+        Trả về True nếu job cũ hơn 1 ngày — dùng để dừng daily crawl.
+
+        TopCV dùng format:
+          "Cập nhật 3 giờ trước"   → còn mới   → False
+          "Cập nhật 2 ngày trước"  → cũ        → True
+          "Cập nhật 1 tuần trước"  → cũ        → True
+        """
+        if not posted_text:
+            return False
+        # Nếu có "ngày", "tuần", "tháng", "năm" trước → cũ
+        return bool(re.search(
+            r"\d+\s+(?:ngày|tuần|tháng|năm)\s+trước",
+            posted_text,
+            re.IGNORECASE,
+        ))
+
+    # ------------------------------------------------------------------
+    # start — trang đầu tiên
+    # ------------------------------------------------------------------
+
     async def start(self):
         yield scrapy.Request(
             url=self.BASE_URL + self.PAGE_PARAMS.format(page=1),
             callback=self.parse,
             cb_kwargs={"page": 1},
-            # headers=self._random_ua(),
         )
 
+    # ------------------------------------------------------------------
+    # parse — danh sách job theo trang
+    # ------------------------------------------------------------------
+
     def parse(self, response, page=1):
+        # Dừng ngay nếu flag đã bật (gặp job cũ ở trang trước)
+        if self.stopped:
+            return
+
+        # Lần đầu: đọc tổng số trang
         if page == 1:
-            pagination_text = response.css("#job-listing-paginate-text::text").get("")
+            pagination_text = response.css(
+                "#job-listing-paginate-text::text"
+            ).get("")
             match = re.search(r"/\s*(\d+)\s*trang", pagination_text)
             self.max_page = int(match.group(1)) if match else 1
-            self.logger.info(f"Tổng số trang: {self.max_page}")
+            self.logger.info(
+                f"[topcv] Mode={self._get_mode()} | Tổng trang: {self.max_page}"
+            )
 
         for job in response.css("div.job-item-search-result"):
-            job_url = job.css("h3.title a::attr(href)").get()
-            job_posted_at = job.css("label.label-update::text").getall()
+            job_url    = job.css("h3.title a::attr(href)").get()
+            posted_raw = job.css("label.label-update::text").getall()
+            posted_text = posted_raw[-1].strip() if posted_raw else ""
 
-            if job_url:                          # ← phải nằm TRONG for loop
+            # ── Daily mode: dừng khi gặp job cũ hơn 1 ngày ────────────
+            if self._get_mode() == "daily" and self._is_old(posted_text):
+                self.logger.info(
+                    f"[topcv][daily] Gặp job cũ ({posted_text!r}) "
+                    f"— dừng crawl trang {page}"
+                )
+                self.stopped = True
+                return   # không yield thêm request nào nữa
+
+            if job_url:
                 yield response.follow(
                     job_url,
                     callback=self.parse_job_page,
-                    cb_kwargs={"job_posted_at": job_posted_at[-1].strip() if job_posted_at else ""},
-                    # headers=self._random_ua(),
+                    cb_kwargs={"job_posted_at": posted_text},
                 )
 
-        next_page = page + 1                    
-        if next_page <= getattr(self, "max_page", 1):
+        # ── Sang trang tiếp ────────────────────────────────────────────
+        next_page = page + 1
+        if next_page <= self.max_page and not self.stopped:
             yield scrapy.Request(
                 url=self.BASE_URL + self.PAGE_PARAMS.format(page=next_page),
                 callback=self.parse,
                 cb_kwargs={"page": next_page},
-                # headers=self._random_ua(),
             )
 
-    def parse_job_page(self, response, job_posted_at=None):
+    # ------------------------------------------------------------------
+    # parse_job_page — chi tiết từng job
+    # ------------------------------------------------------------------
+
+    def parse_job_page(self, response, job_posted_at=""):
         def css(selector):
             return response.css(selector).get("").strip()
 
@@ -68,26 +123,56 @@ class TopcvSpider(scrapy.Spider):
         def xpath_all(query):
             return " ".join(response.xpath(query).getall()).strip()
 
-        job_item = JobItem()
-        job_item["website"]          = "topcv"
-        job_item["job_url"]          = response.url
-        job_item["job_title"]        = css("h1.job-detail__info--title::text")
-        job_item["location"]         = xpath_all("//div[contains(text(),'Địa điểm') and contains(@class,'job-detail__info--section-content-title')]/following-sibling::div//text()")
-        job_item["experience"]       = xpath("//div[div[contains(text(),'Kinh nghiệm')]]/div[contains(@class,'value')]//text()")
-        job_item["compensation"]     = xpath("//div[div[contains(text(),'Mức lương')]]/div[contains(@class,'value')]//text()")
-        job_item["job_type"]         = xpath("//div[div[contains(text(),'Hình thức làm việc')]]/div[contains(@class,'value')]//text()")
-        job_item["work_mode"]        = xpath_all("//h3[contains(text(),'Thời gian làm việc')]/following-sibling::div//text()")
-        job_item["level"]            = xpath("//div[div[contains(text(),'Cấp bậc')]]/div[contains(@class,'value')]//text()")
-        job_item["company_title"]    = css("a.name::text")
-        job_item["company_size"]     = xpath("//div[contains(@class,'company-scale')]//div[@class='company-value']//text()")
-        job_item["company_industry"] = xpath("//div[@class='company-title' and contains(normalize-space(),'Lĩnh vực:')]/following-sibling::div[@class='company-value']//text()")
-        job_item['job_category']     =''
-        job_item["number_recruit"]   = xpath("//div[div[contains(text(),'Số lượng tuyển')]]/div[contains(@class,'value')]//text()")
-        job_item["education_level"]  = xpath("//div[div[contains(text(),'Học vấn')]]/div[contains(@class,'value')]//text()")
-        job_item["job_description"]  = xpath_all("//h3[contains(text(),'Mô tả công việc')]/following-sibling::div[@class='job-description__item--content']//*//text()")
-        job_item["job_requirement"]  = xpath_all("//h3[contains(text(),'Yêu cầu ứng viên')]/following-sibling::div[@class='job-description__item--content']//*//text()")
-        job_item["job_posted_at"] = job_posted_at
-        job_item["job_deadline"]     = css("div.job-detail__info--deadline::text").replace("Hạn nộp hồ sơ: ", "")
-        job_item["scraped_at"]       = datetime.now()
+        item = JobItem()
+        item["website"]          = "topcv"
+        item["job_url"]          = response.url
+        item["job_title"]        = css("h1.job-detail__info--title::text")
+        item["location"]         = xpath_all(
+            "//div[contains(text(),'Địa điểm') and contains(@class,'job-detail__info--section-content-title')]"
+            "/following-sibling::div//text()"
+        )
+        item["experience"]       = xpath(
+            "//div[div[contains(text(),'Kinh nghiệm')]]/div[contains(@class,'value')]//text()"
+        )
+        item["compensation"]     = xpath(
+            "//div[div[contains(text(),'Mức lương')]]/div[contains(@class,'value')]//text()"
+        )
+        item["job_type"]         = xpath(
+            "//div[div[contains(text(),'Hình thức làm việc')]]/div[contains(@class,'value')]//text()"
+        )
+        item["work_mode"]        = xpath_all(
+            "//h3[contains(text(),'Thời gian làm việc')]/following-sibling::div//text()"
+        )
+        item["level"]            = xpath(
+            "//div[div[contains(text(),'Cấp bậc')]]/div[contains(@class,'value')]//text()"
+        )
+        item["company_title"]    = css("a.name::text")
+        item["company_size"]     = xpath(
+            "//div[contains(@class,'company-scale')]//div[@class='company-value']//text()"
+        )
+        item["company_industry"] = xpath(
+            "//div[@class='company-title' and contains(normalize-space(),'Lĩnh vực:')]"
+            "/following-sibling::div[@class='company-value']//text()"
+        )
+        item["job_category"]     = ""
+        item["number_recruit"]   = xpath(
+            "//div[div[contains(text(),'Số lượng tuyển')]]/div[contains(@class,'value')]//text()"
+        )
+        item["education_level"]  = xpath(
+            "//div[div[contains(text(),'Học vấn')]]/div[contains(@class,'value')]//text()"
+        )
+        item["job_description"]  = xpath_all(
+            "//h3[contains(text(),'Mô tả công việc')]"
+            "/following-sibling::div[@class='job-description__item--content']//*//text()"
+        )
+        item["job_requirement"]  = xpath_all(
+            "//h3[contains(text(),'Yêu cầu ứng viên')]"
+            "/following-sibling::div[@class='job-description__item--content']//*//text()"
+        )
+        item["job_posted_at"]    = job_posted_at
+        item["job_deadline"]     = css(
+            "div.job-detail__info--deadline::text"
+        ).replace("Hạn nộp hồ sơ: ", "")
+        item["scraped_at"]       = datetime.now()
 
-        yield job_item
+        yield item
