@@ -161,8 +161,49 @@ def get_text_all(driver, selectors):
     return []
 
 
+def get_employer_row(driver, label):
+    """
+    Lấy value từ bảng employer info bên phải.
+    Cấu trúc HTML thực tế:
+      <div class="row ipy-2 gx-0 border-bottom-dashed">
+        <div class="col text-dark-grey">Company size</div>
+        <div class="col text-end text-it-black">51-150 employees</div>
+      </div>
+    """
+    rows = driver.find_elements(
+        By.CSS_SELECTOR, "section.job-show-employer-info div.row"
+    )
+    for row in rows:
+        cols = row.find_elements(By.CSS_SELECTOR, "div.col")
+        if len(cols) >= 2 and label.lower() in safe_text(cols[0]).lower():
+            return safe_text(cols[1])
+    return ""
+
+
+def get_paragraph_by_heading(driver, heading_text):
+    """
+    Lấy text của div.paragraph chứa <h2> khớp heading_text.
+    Cấu trúc HTML thực tế trong section.job-content:
+      <div class="imy-5 paragraph">
+        <h2>Job description</h2>
+        <p>...</p>
+      </div>
+    """
+    try:
+        el = driver.find_element(
+            By.XPATH,
+            f"//section[contains(@class,'job-content')]"
+            f"//div[contains(@class,'paragraph')]"
+            f"[.//h2[contains(text(),'{heading_text}')]]"
+        )
+        return safe_text(el)
+    except Exception:
+        return ""
+
+
 # =========================================================
 #  Parse từng job detail page
+#  — Selector căn chỉnh theo HTML thực tế của ITviec
 # =========================================================
 
 def parse_job(driver, keyword, category, list_meta):
@@ -171,246 +212,152 @@ def parse_job(driver, keyword, category, list_meta):
     list_meta: dict các trường đã lấy được từ card ngoài danh sách
                (salary, work_mode, location, skills).
     Trả về dict đúng cấu trúc JobItem, hoặc None nếu không parse được.
+
+    HTML structure (verified 2026-04):
+      Left col  → class="col-xl-8"  : header + job-content
+      Right col → class="col-xl-4"  : section.job-show-employer-info
     """
 
     # ── job_title ─────────────────────────────────────────
+    # <h1 class="ipt-xl-6 text-it-black">Mid/Sr Frontend Developer...</h1>
     job_title = get_text_first(driver, [
         "h1.text-it-black",
-        "h1[class*='title']",
         "h1",
     ])
     if not job_title:
         return None
 
     # ── company_title ──────────────────────────────────────
+    # <div class="employer-name">GrapeCity</div>
     company_title = get_text_first(driver, [
-        "div.company-title a",
-        "a.employer-name",
-        "section.company-infos h2 a",
-        "div.employer-details h2 a",
-        "h2.company-name",
+        "div.employer-name",
+        "div.job-header-info div.employer-name",
+    ])
+
+    # ── compensation ──────────────────────────────────────
+    # <div class="d-flex align-items-center salary text-success-color">
+    #   <span class="ips-2 fw-500">30,000,000 - 50,000,000đ</span>
+    # Ưu tiên lấy từ meta card trước (vì card luôn có lương nếu public)
+    compensation = list_meta.get("salary") or get_text_first(driver, [
+        "div.salary span.fw-500",
+        "div.salary",
     ])
 
     # ── location ──────────────────────────────────────────
-    # Ưu tiên lấy từ meta card (đầy đủ hơn), fallback sang detail page
+    # <span class="normal-text text-rich-grey">Tầng 12B tòa nhà Machinco...</span>
+    # (đứng sau icon map-pin, trong div.d-flex.flex-column.gap-2)
     location = list_meta.get("location") or get_text_first(driver, [
-        "div.location span:not(.icon)",
-        "span[itemprop='addressLocality']",
-        "div.city",
-        "div[class*='address']",
+        "div.d-flex.flex-column.gap-2 > div:first-child span.normal-text",
+        "div.job-show-info span.normal-text.text-rich-grey",
     ])
 
-    # ── compensation (salary) ─────────────────────────────
-    # ITviec có thể hiển thị ở card hoặc trong badge trên trang detail
-    compensation = list_meta.get("salary") or get_text_first(driver, [
-        "div.salary-from-to",
-        "span.salary",
-        "div[class*='salary']",
-        # Badge lương trong header detail
-        "div.preview-header-item span.text-highlight",
-        "span[class*='salary']",
-    ])
-
-    # ── work_mode & job_type ───────────────────────────────
+    # ── work_mode ─────────────────────────────────────────
+    # <span class="normal-text text-rich-grey ms-1">At office</span>
+    # Nằm trong div.preview-header-item đầu tiên (icon người)
+    # div.preview-header-item thứ hai là posted-at (icon clock)
     work_mode = list_meta.get("work_mode", "")
-    job_type  = ""
-
-    # Các tag trong trang detail: badge nhỏ liệt kê loại công việc
-    tag_selectors = [
-        "div.tag-list span.tag",
-        "div.job-details--content span.tag",
-        "div.benefits span",
-        "span.itag",
-        "a.itag",
-    ]
-    all_tags = get_text_all(driver, tag_selectors)
-    for tag in all_tags:
-        lower = tag.lower()
-        if not work_mode and lower in _WORK_MODE_VALUES:
-            work_mode = tag
-        if not job_type and lower in _JOB_TYPE_VALUES:
-            job_type = tag
-
-    # Fallback job_type: ITviec hầu hết là Full-time
-    if not job_type:
-        job_type = "Full-time"
-
-    # ── level (cấp bậc) ───────────────────────────────────
-    # ITviec: "Fresher", "Junior", "Senior", "Manager", "Director", ...
-    level = get_text_first(driver, [
-        "div.job-details--content div[class*='level'] span",
-        "div.row div.level",
-        # Thường nằm trong bảng thông tin ngắn bên trái detail
-        "div.job-info div.info-item:nth-child(1) span",
-    ])
-    if not level:
-        # Fallback: tìm trong tất cả small tag trong job-info
-        items = driver.find_elements(
-            By.CSS_SELECTOR, "div.job-info div.info-item, ul.job-info-meta li"
+    if not work_mode:
+        preview_items = driver.find_elements(
+            By.CSS_SELECTOR, "div.preview-header-item"
         )
-        for item in items:
-            text = safe_text(item)
-            lower = text.lower()
-            if any(kw in lower for kw in [
-                "fresher", "junior", "senior", "manager", "director",
-                "lead", "principal", "intern", "executive",
-            ]):
-                level = text
-                break
+        if preview_items:
+            # item đầu tiên = work mode (At office / Remote / Hybrid)
+            work_mode = safe_text(
+                preview_items[0].find_element(By.CSS_SELECTOR, "span.normal-text")
+            ) if preview_items[0].find_elements(By.CSS_SELECTOR, "span.normal-text") else ""
+
+    # ── job_posted_at ─────────────────────────────────────
+    # Ưu tiên lấy từ card meta (đã parse khi ở trang list)
+    # Fallback: tìm trên trang detail
+    job_posted_at = list_meta.get("job_posted_at", "")
+    if not job_posted_at:
+        preview_items = driver.find_elements(By.CSS_SELECTOR, "div.preview-header-item")
+        if len(preview_items) >= 2:
+            spans = preview_items[1].find_elements(By.CSS_SELECTOR, "span.normal-text")
+            if spans:
+                job_posted_at = safe_text(spans[0])
+
+    # ── job_type ──────────────────────────────────────────
+    # ITviec không hiển thị job_type riêng — mặc định Full-time
+    job_type = "Full-time"
+
+    # ── skills & job_category ─────────────────────────────
+    # Job Expertise → job_category  (Frontend Developer, Backend Developer...)
+    # Job Domain    → company_industry (Education and Training...)
+    # Skills        → skills bonus field
+    skills  = get_text_all(driver, ["a.itag.itag-light.itag-sm"])
+    domain  = get_text_all(driver, ["div.itag.bg-light-grey.itag-sm"])
+
+    # job_category = expertise từ card (ưu tiên) hoặc skills tags
+    expertise_from_card = list_meta.get("job_expertise", "")
+    job_category = (
+        [expertise_from_card] if expertise_from_card
+        else skills
+        or list_meta.get("skills", [])
+    )
+
+    # company_industry = domain tag trên detail page (ưu tiên)
+    # hoặc row "Company industry" từ bảng employer info bên phải
+
+    # ── level ─────────────────────────────────────────────
+    # Không có trường riêng trong HTML này — thử tìm trong title
+    level = ""
+    title_lower = job_title.lower()
+    for kw in ["fresher", "junior", "mid", "senior", "lead", "manager",
+               "director", "principal", "intern", "staff", "associate"]:
+        if kw in title_lower:
+            level = kw.capitalize()
+            break
 
     # ── experience ────────────────────────────────────────
-    # ITviec hiển thị "X năm kinh nghiệm" / "X years experience"
-    experience = get_text_first(driver, [
-        "div.job-info span[class*='experience']",
-        "div.info-item--experience span",
-    ])
-    if not experience:
-        items = driver.find_elements(
-            By.CSS_SELECTOR, "div.job-info div.info-item, ul.job-info-meta li"
-        )
-        for item in items:
-            text = safe_text(item)
-            lower = text.lower()
-            if any(kw in lower for kw in ["năm", "year", "kinh nghiệm", "experience"]):
-                experience = text
-                break
+    # Không có field riêng — tìm text "X years" trong job_requirement
+    experience = ""
 
     # ── education_level ───────────────────────────────────
-    education_level = get_text_first(driver, [
-        "div.info-item--education span",
-        "div.job-info span[class*='education']",
-    ])
-    if not education_level:
-        items = driver.find_elements(
-            By.CSS_SELECTOR, "div.job-info div.info-item, ul.job-info-meta li"
-        )
-        for item in items:
-            text = safe_text(item)
-            lower = text.lower()
-            if any(kw in lower for kw in [
-                "đại học", "cao đẳng", "university", "college",
-                "bachelor", "master", "phd", "diploma",
-            ]):
-                education_level = text
-                break
+    education_level = ""
 
     # ── number_recruit ────────────────────────────────────
     number_recruit = ""
-    items = driver.find_elements(
-        By.CSS_SELECTOR, "div.job-info div.info-item, ul.job-info-meta li"
-    )
-    for item in items:
-        text = safe_text(item)
-        lower = text.lower()
-        if any(kw in lower for kw in ["tuyển", "openings", "vacancies", "recruit"]):
-            m = _NUM_RE.search(text)
-            if m:
-                number_recruit = m.group()
-                break
-
-    # ── job_category ──────────────────────────────────────
-    # Tags kỹ năng / ngành nghề của job
-    job_category = get_text_all(driver, [
-        "div.tag-list a.tag",
-        "div[data-controller='responsive-tag-list'] a.itag",
-        "div.job-category a.itag",
-        "div.itag-list a.itag",
-    ])
-    # Nếu không có, lấy từ list_meta skills
-    if not job_category:
-        job_category = list_meta.get("skills", [])
-
-    # ── company_size ──────────────────────────────────────
-    company_size = get_text_first(driver, [
-        "section.company-infos div.company-size span",
-        "div.company-info li span[class*='size']",
-        "div.employer-details span[class*='size']",
-    ])
-    if not company_size:
-        # Fallback: tìm text chứa "nhân viên" hoặc "employees"
-        els = driver.find_elements(By.CSS_SELECTOR, "section.company-infos li, div.company-info li")
-        for el in els:
-            text = safe_text(el)
-            lower = text.lower()
-            if "nhân viên" in lower or "employee" in lower or (
-                _NUM_RE.search(text) and ("-" in text or "+" in text)
-            ):
-                company_size = text
-                break
-
-    # ── company_industry ──────────────────────────────────
-    company_industry = get_text_all(driver, [
-        "section.company-infos div.company-industry span",
-        "div.company-info li span[class*='industry']",
-        "section.company-infos div.d-inline-flex",
-    ])
-    if not company_industry:
-        # Fallback: text ngoài company_size trong list company info
-        els = driver.find_elements(By.CSS_SELECTOR, "section.company-infos li, div.company-info li")
-        for el in els:
-            text = safe_text(el)
-            lower = text.lower()
-            # Bỏ qua nếu là size hoặc địa điểm
-            if (
-                "nhân viên" not in lower
-                and "employee" not in lower
-                and len(text) > 3
-                and not _NUM_RE.search(text)
-            ):
-                company_industry = [text]
-                break
-
-    # ── job_description ───────────────────────────────────
-    # ITviec tách thành 2 section: mô tả công việc & yêu cầu
-    job_description = get_text_all(driver, [
-        "section.job-description div.paragraph",
-        "section#job-description-section div.content",
-        "div.job-description div.content",
-    ])
-    # Nếu chỉ có 1 section chứa cả hai, lấy toàn bộ
-    if not job_description:
-        job_description = get_text_all(driver, [
-            "div.job-details--content",
-            "div#job-details",
-        ])
-
-    # ── job_requirement ───────────────────────────────────
-    job_requirement = get_text_all(driver, [
-        "section.job-experiences div.paragraph",
-        "section#job-requirement-section div.content",
-        "div.job-requirement div.content",
-    ])
-
-    # ── job_posted_at ─────────────────────────────────────
-    job_posted_at = ""
-    # Thử lấy từ datetime attribute (ISO format) trước
-    time_els = driver.find_elements(By.CSS_SELECTOR, "time[datetime]")
-    for el in time_els:
-        dt = el.get_attribute("datetime")
-        if dt:
-            job_posted_at = dt
-            break
-    if not job_posted_at:
-        job_posted_at = get_text_first(driver, [
-            "div.preview-header-item span.small-text",
-            "span.posted-date",
-            "div.job-posted-date",
-        ])
 
     # ── job_deadline ──────────────────────────────────────
     job_deadline = ""
-    els = driver.find_elements(By.CSS_SELECTOR, "div.job-info div.info-item, ul.job-info-meta li")
-    for el in els:
-        text = safe_text(el)
-        lower = text.lower()
-        if any(kw in lower for kw in ["deadline", "hạn nộp", "apply before", "hết hạn"]):
-            job_deadline = text
-            break
-    if not job_deadline:
-        job_deadline = get_text_first(driver, [
-            "div.job-deadline span",
-            "span[class*='deadline']",
-        ])
+
+    # ── company_size ──────────────────────────────────────
+    # <div class="col text-end text-it-black">51-150 employees</div>
+    # (row có label "Company size" trong section.job-show-employer-info)
+    company_size = get_employer_row(driver, "Company size")
+
+    # ── company_industry ──────────────────────────────────
+    # Ưu tiên: Job Domain tag trên detail page
+    # <div class="itag bg-light-grey itag-sm cursor-default">Education and Training</div>
+    # Fallback: row "Company industry" từ bảng employer info bên phải
+    company_industry = (
+        ", ".join(domain) if domain
+        else get_employer_row(driver, "Company industry")
+    )
+
+    # ── job_description ───────────────────────────────────
+    # section.job-content chứa nhiều div.paragraph, mỗi cái có <h2>
+    # Lấy đúng paragraph "Job description"
+    job_description = get_paragraph_by_heading(driver, "Job description")
+    if not job_description:
+        # Fallback: lấy toàn bộ section.job-content
+        job_description = get_text_first(driver, ["section.job-content"])
+
+    # ── job_requirement ───────────────────────────────────
+    # Paragraph "Your skills and experience"
+    job_requirement = get_paragraph_by_heading(driver, "Your skills and experience")
+    if not job_requirement:
+        job_requirement = get_paragraph_by_heading(driver, "skills and experience")
+
+    # ── Trích experience từ job_requirement nếu chưa có ──
+    if not experience and job_requirement:
+        m = re.search(
+            r"(\d+)\+?\s*(?:năm|year)s?\s*(?:of\s*)?(?:kinh nghiệm|experience)",
+            job_requirement, re.IGNORECASE,
+        )
+        if m:
+            experience = m.group(0)
 
     return {
         "website"         : "itviec",
@@ -433,10 +380,10 @@ def parse_job(driver, keyword, category, list_meta):
         "job_posted_at"   : job_posted_at,
         "job_deadline"    : job_deadline,
         "scraped_at"      : datetime.now().isoformat(),
-        # ── bonus: không có trong JobItem nhưng hữu ích ──
+        # bonus
         "search_keyword"  : keyword,
         "category"        : category,
-        "skills"          : list_meta.get("skills", []),
+        "skills"          : skills,
     }
 
 
@@ -447,13 +394,31 @@ def parse_job(driver, keyword, category, list_meta):
 
 def extract_card_meta(card):
     """
-    Parse nhanh các trường có sẵn trên card listing trước khi navigate vào detail.
-    Trả về dict để truyền vào parse_job qua list_meta.
+    Parse nhanh các trường có sẵn trên card listing.
+
+    HTML card thực tế (verified 2026-04):
+
+      <span class="small-text text-dark-grey">Posted 22 hours ago</span>
+      <h3><a href="/it-jobs/{slug}...">Title</a></h3>
+      <div class="salary ..."><span class="ips-2 fw-500">30,000,000đ</span></div>
+      <a class="text-decoration-dot-underline small-text" title="Frontend Developer">...</a>
+      <div class="text-rich-grey flex-shrink-0">Hybrid</div>          ← work_mode
+      <div class="text-rich-grey text-truncate text-nowrap"
+           title="Ho Chi Minh - Ha Noi">...</div>                     ← location (title attr)
+      <a data-responsive-tag-list-target="tag">ReactJS</a>            ← skills
     """
     def css(sel):
         try:
             el = card.find_element(By.CSS_SELECTOR, sel)
             return safe_text(el)
+        except Exception:
+            return ""
+
+    def attr(sel, attribute):
+        """Lấy attribute thay vì text — dùng cho title không bị truncate."""
+        try:
+            el = card.find_element(By.CSS_SELECTOR, sel)
+            return (el.get_attribute(attribute) or "").strip()
         except Exception:
             return ""
 
@@ -464,28 +429,50 @@ def extract_card_meta(card):
         except Exception:
             return []
 
-    # Slug để tạo URL detail
+    # ── slug ─────────────────────────────────────────────────
     slug = card.get_attribute("data-search--job-selection-job-slug-value") or ""
 
-    salary = (
-        css("div.salary span.fw-500")
-        or css("div.salary")
-        or css("span[class*='salary']")
+    # ── job_posted_at ────────────────────────────────────────
+    # <span class="small-text text-dark-grey">Posted 22 hours ago</span>
+    job_posted_at = css("span.small-text.text-dark-grey")
+
+    # ── salary ────────────────────────────────────────────────
+    # <div class="salary ..."><span class="ips-2 fw-500">30,000,000 - 50,000,000đ</span>
+    salary = css("div.salary span.fw-500") or css("div.salary")
+
+    # ── job_expertise (job_category) ─────────────────────────
+    # <a class="text-decoration-dot-underline small-text" title="Frontend Developer">
+    # Dùng title attribute — text có thể bị truncate
+    job_expertise = (
+        attr("a.text-decoration-dot-underline.small-text", "title")
+        or css("a.text-decoration-dot-underline.small-text")
     )
+
+    # ── work_mode ─────────────────────────────────────────────
+    # <div class="text-rich-grey flex-shrink-0">Hybrid</div>
+    work_mode = css("div.text-rich-grey.flex-shrink-0")
+
+    # ── location ──────────────────────────────────────────────
+    # <div class="text-rich-grey text-truncate text-nowrap" title="Ho Chi Minh - Ha Noi">
+    # Đọc title attribute để tránh text bị cắt bởi CSS text-truncate
     location = (
-        css("div.text-rich-grey.text-truncate")
-        or css("div.location")
-        or css("span.location")
+        attr("div.text-rich-grey.text-truncate.text-nowrap", "title")
+        or css("div.text-rich-grey.text-truncate.text-nowrap")
+        or css("div.text-rich-grey.text-truncate")
     )
-    work_mode = css("div.text-rich-grey.flex-shrink-0") or css("span.remote-tag")
-    skills    = css_all('div[data-controller="responsive-tag-list"] a.itag')
+
+    # ── skills ────────────────────────────────────────────────
+    # <a data-responsive-tag-list-target="tag" href="/it-jobs/reactjs...">ReactJS</a>
+    skills = css_all('a[data-responsive-tag-list-target="tag"]')
 
     return {
-        "slug"    : slug,
-        "salary"  : salary,
-        "location": location,
-        "work_mode": work_mode,
-        "skills"  : skills,
+        "slug"         : slug,
+        "job_posted_at": job_posted_at,
+        "salary"       : salary,
+        "job_expertise": job_expertise,
+        "work_mode"    : work_mode,
+        "location"     : location,
+        "skills"       : skills,
     }
 
 
@@ -717,7 +704,7 @@ def login(driver):
             COOKIE_FILE.unlink(missing_ok=True)
 
     # ── Login thủ công (lần đầu hoặc cookie hết hạn) ──────
-    driver.get("https://itviec.com/sign_in")
+    driver.get("https://itviec.com/users/sign_in")
     print("\n" + "="*55)
     print("  Vui lòng ĐĂNG NHẬP THỦ CÔNG trên cửa sổ Chrome vừa mở.")
     print("  ITviec dùng Google OAuth / bot check — phải login bằng tay.")
