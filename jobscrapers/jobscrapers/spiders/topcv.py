@@ -70,14 +70,16 @@ class TopcvSpider(scrapy.Spider):
 
         # Lần đầu: đọc tổng số trang
         if page == 1:
-            pagination_text = response.css(
-                "#job-listing-paginate-text::text"
-            ).get("")
+            # getall() lấy toàn bộ text nodes, join lại
+            pagination_text = " ".join(
+                response.css("#job-listing-paginate-text ::text").getall()
+            ).replace("\xa0", " ")   # thay &nbsp; thành space
+
             match = re.search(r"/\s*(\d+)\s*trang", pagination_text)
             self.max_page = int(match.group(1)) if match else 1
             self.logger.info(
                 f"[topcv] Mode={self._get_mode()} | Tổng trang: {self.max_page}"
-            )
+    )
 
         for job in response.css("div.job-item-search-result"):
             job_url    = job.css("h3.title a::attr(href)").get()
