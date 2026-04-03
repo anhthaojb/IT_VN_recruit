@@ -126,7 +126,9 @@ class TopcvSpider(scrapy.Spider):
         item = JobItem()
         item["website"]          = "topcv"
         item["job_url"]          = response.url
-        item["job_title"]        = css("h1.job-detail__info--title::text")
+        item["job_title"] = response.xpath(
+    "normalize-space(//h1[contains(@class,'job-detail__info--title')])"
+).get("").strip()
         item["location"]         = xpath_all(
             "//div[contains(text(),'Địa điểm') and contains(@class,'job-detail__info--section-content-title')]"
             "/following-sibling::div//text()"
@@ -170,9 +172,7 @@ class TopcvSpider(scrapy.Spider):
             "/following-sibling::div[@class='job-description__item--content']//*//text()"
         )
         item["job_posted_at"]    = job_posted_at
-        item["job_deadline"]     = css(
-            "div.job-detail__info--deadline::text"
-        ).replace("Hạn nộp hồ sơ: ", "")
+        item["job_deadline"] = css("div.job-detail__info--deadline-date::text")
         item["scraped_at"]       = datetime.now()
 
         yield item
