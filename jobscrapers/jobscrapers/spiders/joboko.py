@@ -21,25 +21,21 @@ class JobokoSpider(scrapy.Spider):
     @staticmethod
     def _is_old(posted_text: str) -> bool:
         """
-        Joboko dùng em.item-date với data-value dạng "dd/mm/yyyy".
-        So sánh với ngày hiện tại.
+        Joboko dùng "Ngày làm mới: dd/mm/yyyy" làm proxy cho ngày đăng.
+        Ngưỡng > 2 ngày để buffer cho job đăng cuối ngày hôm qua.
         """
         if not posted_text:
-            return False
+            return False  # Không có date → không dừng, cứ crawl
         m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", posted_text.strip())
         if m:
             try:
                 posted_date = datetime(
                     int(m.group(3)), int(m.group(2)), int(m.group(1))
                 ).date()
-                return (datetime.now().date() - posted_date).days > 1
+                return (datetime.now().date() - posted_date).days > 2
             except ValueError:
                 pass
         return False
-
-    # ------------------------------------------------------------------
-    # parse — danh sách job
-    # ------------------------------------------------------------------
 
     def parse(self, response):
         if self.stopped:
@@ -47,7 +43,6 @@ class JobokoSpider(scrapy.Spider):
 
         jobs = response.css(".nw-job-list__list div.item")
 
-        # Dừng khi trang không còn job
         if not jobs:
             self.logger.info("[joboko] Không còn job — dừng")
             return
@@ -57,12 +52,6 @@ class JobokoSpider(scrapy.Spider):
             if not href:
                 continue
 
-            # ── Lấy meta từ card ──────────────────────────────────────
-            # HTML card có 4 div.col trong div.fz-15.row:
-            #   col[0] = compensation  ("Cạnh tranh")
-            #   col[1] = location      ("Thừa Thiên Huế")
-            #   col[2] = posted_at     ("Ngày làm mới: 04/02/2026")
-            #   col[3] = deadline      ("Ngày hết hạn: 04/04/2026")
             cols = job.css("div.fz-15.row div.col-6")
 
             compensation_raw = cols[0].css("::text").get("").strip() if len(cols) > 0 else ""
@@ -70,17 +59,15 @@ class JobokoSpider(scrapy.Spider):
             posted_raw       = cols[2].css("::text").get("").strip() if len(cols) > 2 else ""
             deadline_raw     = cols[3].css("::text").get("").strip() if len(cols) > 3 else ""
 
-            # Trích date từ text "Ngày làm mới: 04/02/2026"
             m_posted   = re.search(r"\d{2}/\d{2}/\d{4}", posted_raw)
             m_deadline = re.search(r"\d{2}/\d{2}/\d{4}", deadline_raw)
             posted_at  = m_posted.group(0)   if m_posted   else ""
             deadline   = m_deadline.group(0) if m_deadline else ""
 
-            # Daily mode: dùng posted_at để check thay vì deadline
-            check_date = posted_at or deadline
-            if self._get_mode() == "daily" and self._is_old(check_date):
+            # Chỉ dùng "Ngày làm mới" để check — không fallback sang deadline
+            if self._get_mode() == "daily" and self._is_old(posted_at):
                 self.logger.info(
-                    f"[joboko][daily] Gặp job cũ ({check_date!r}) — dừng"
+                    f"[joboko][daily] Ngày làm mới cũ ({posted_at!r}) — dừng"
                 )
                 self.stopped = True
                 return
@@ -100,7 +87,6 @@ class JobokoSpider(scrapy.Spider):
                 },
             )
 
-        # Next page — fix bug: kiểm tra None trước khi ghép URL
         if not self.stopped:
             next_href = response.css(".nw-job-list__more a::attr(href)").get()
             if next_href:
@@ -109,10 +95,6 @@ class JobokoSpider(scrapy.Spider):
                     else "https://vn.joboko.com" + next_href
                 )
                 yield scrapy.Request(url=next_url, callback=self.parse)
-
-    # ------------------------------------------------------------------
-    # parse_job_page — chi tiết job
-    # ------------------------------------------------------------------
 
     def parse_job_page(self, response,
                        card_compensation="", card_location="",
@@ -123,54 +105,68 @@ class JobokoSpider(scrapy.Spider):
         def xpath_all(query):
             return " ".join(response.xpath(query).getall()).strip()
 
-        # Deadline từ detail page — trích date, bỏ "(Còn X ngày)"
-        deadline_detail = response.css("em.item-date::attr(data-value)").get("").strip()
-        m = re.search(r"\d{2}/\d{2}/\d{4}", deadline_detail)
-        deadline_detail = m.group(0) if m else deadline_detail
-
-        item = JobItem()
-        item["website"]         = "joboko"
-        item["job_url"]         = response.url
-        item["job_title"]       = response.css(
+        job_title = response.css(
             "h1.nw-company-hero__title a::text"
         ).get("").strip()
-        item["location"]        = (
-            response.css(".nw-company-hero__address a::text").get("").strip()
-            or card_location
-        )
-        item["experience"]      = xpath(
-            "//div[contains(., 'Kinh nghiệm')]/span/text()"
-        )
-        item["compensation"]    = (
-            xpath("//div[contains(., 'Thu nhập')]/span/text()")
-            or card_compensation
-        )
-        item["job_type"]        = xpath(
-            "//div[contains(., 'Loại hình')]/span/text()"
-        )
-        item["work_mode"]       = ""
-        item["level"]           = xpath(
-            "//div[contains(., 'Chức vụ')]/span/text()"
-        )
-        item["company_title"]   = response.css(
-            ".nw-company-hero__info h2 a::text"
+
+        locations = response.css(".nw-company-hero__address a::text").getall()
+        location = ", ".join(l.strip() for l in locations if l.strip()) or card_location
+
+        deadline_detail = response.css("em.item-date::attr(data-value)").get("").strip()
+
+        compensation = response.xpath(
+            "//div[contains(@class,'item-content')]"
+            "[contains(.,'Thu nhập')]/span[@class='fw-bold']/text()"
+        ).get("").strip() or card_compensation
+
+        experience = response.xpath(
+            "//div[contains(@class,'item-content')]"
+            "[contains(.,'Kinh nghiệm')]/span[@class='fw-bold']/text()"
         ).get("").strip()
-        item["company_size"]    = xpath_all(
-            "//span[contains(text(),'Quy mô công ty')]"
-            "/ancestor::div[1]/following-sibling::div[1]//text()"
-        )
-        item["company_industry"]= ""
-        item["job_category"]    = ""
-        item["number_recruit"]  = ""
-        item["education_level"] = ""
-        item["job_description"] = xpath_all(
-            "//h3[contains(text(),'Mô tả công việc')]/following-sibling::div[1]//text()"
-        )
-        item["job_requirement"] = xpath_all(
-            "//h3[contains(text(),'Yêu cầu')]/following-sibling::div[1]//text()"
-        )
-        item["job_posted_at"]   = card_posted_at   # từ card — chính xác hơn
-        item["job_deadline"]    = deadline_detail or card_deadline
-        item["scraped_at"]      = datetime.now()
+
+        job_type = response.xpath(
+            "//div[contains(@class,'item-content')]"
+            "[contains(.,'Loại hình')]/span[@class='fw-bold']/text()"
+        ).get("").strip()
+
+        level = response.xpath(
+            "//div[contains(@class,'item-content')]"
+            "[contains(.,'Chức vụ')]/span[@class='fw-bold']/text()"
+        ).get("").strip()
+
+        company_title = response.xpath(
+            "//a[contains(@class,'nw-company-hero__text')]/text()"
+        ).get("").strip()
+
+        company_size = response.xpath(
+            "//span[contains(.,'Quy mô công ty')]"
+            "/ancestor::div[contains(@class,'nw-job-detail__heading')]"
+            "/following-sibling::div[contains(@class,'nw-job-detail__text')][1]/text()"
+        ).get("").strip()
+
+        job_description = xpath_all("//div[@class='text-left job-desc']//text()")
+        job_requirement = xpath_all("//div[@class='text-left job-requirement']//text()")
+
+        item = JobItem()
+        item["website"]          = "joboko"
+        item["job_url"]          = response.url
+        item["job_title"]        = job_title
+        item["location"]         = location
+        item["experience"]       = experience
+        item["compensation"]     = compensation
+        item["job_type"]         = job_type
+        item["work_mode"]        = ""
+        item["level"]            = level
+        item["company_title"]    = company_title
+        item["company_size"]     = company_size
+        item["company_industry"] = ""
+        item["job_category"]     = ""
+        item["number_recruit"]   = ""
+        item["education_level"]  = ""
+        item["job_description"]  = job_description
+        item["job_requirement"]  = job_requirement
+        item["job_posted_at"]    = card_posted_at
+        item["job_deadline"]     = deadline_detail or card_deadline
+        item["scraped_at"]       = datetime.now()
 
         yield item

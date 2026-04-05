@@ -47,19 +47,21 @@ class JobsgoSpider(scrapy.Spider):
     # ------------------------------------------------------------------
 
     async def start(self):
+        mode = self.crawler.settings.get("CRAWL_MODE", "daily")
+        # Daily chỉ cần trang 1, full mode crawl tất cả
+        url = "https://jobsgo.vn/viec-lam-cong-nghe-thong-tin.html"
         yield scrapy.Request(
-            url="https://jobsgo.vn/viec-lam-cong-nghe-thong-tin.html",
+            url=url,
             meta={
                 "playwright": True,
                 "playwright_page_methods": [
                     PageMethod("wait_for_selector", "div.job-card", timeout=15000),
                 ],
-                "playwright_context_kwargs": {
-                    "java_script_enabled": True,
-                },
+                "page_num": 1,  # track page number
             },
             callback=self.parse,
         )
+
 
     # ------------------------------------------------------------------
     # parse — danh sách job
@@ -102,7 +104,8 @@ class JobsgoSpider(scrapy.Spider):
         # Next page
         if not self.stopped:
             next_page = response.css("ul.pagination li.next a::attr(href)").get()
-            if next_page:
+            page_num = response.meta.get("page_num", 1)  # ← thêm
+            if next_page and (self._get_mode() == "full" or page_num < 3):  # ← thêm điều kiện
                 yield scrapy.Request(
                     url=response.urljoin(next_page),
                     meta={
@@ -110,6 +113,7 @@ class JobsgoSpider(scrapy.Spider):
                         "playwright_page_methods": [
                             PageMethod("wait_for_selector", "div.job-card", timeout=15000),
                         ],
+                        "page_num": page_num + 1,  # ← thêm
                     },
                     callback=self.parse,
                 )
@@ -170,7 +174,10 @@ class JobsgoSpider(scrapy.Spider):
             "/following-sibling::strong//a/text()"
         ).getall()).strip()
         item["work_mode"]      = ""
-        item["number_recruit"] = ""
+        item["number_recruit"] = response.xpath(
+    "//span[contains(@class,'text-muted') and contains(text(),'Số lượng tuyển:')]"
+    "/following-sibling::strong/text()"
+).get("").strip()
         item["company_size"]   = ""   # điền ở parse_company_page
         item["company_industry"]= ""  # điền ở parse_company_page
         item["scraped_at"]     = datetime.now()

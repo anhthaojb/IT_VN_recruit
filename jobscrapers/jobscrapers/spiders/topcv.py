@@ -7,6 +7,12 @@ from jobscrapers.items import JobItem
 class TopcvSpider(scrapy.Spider):
     name = "topcv"
     allowed_domains = ["topcv.vn"]
+    custom_settings = {
+        "DOWNLOAD_DELAY"            : 5,
+        "RANDOMIZE_DOWNLOAD_DELAY"  : True,   # thực tế 5~10s
+        "RETRY_HTTP_CODES"          : [403, 429, 500, 502, 503, 504],
+        "RETRY_TIMES"               : 3,
+    }
 
     BASE_URL    = "https://www.topcv.vn/tim-viec-lam-cong-nghe-thong-tin-cr257"
     PAGE_PARAMS = "?sort=newp&page={page}&category_family=r257"
@@ -43,7 +49,8 @@ class TopcvSpider(scrapy.Spider):
             return False
         # Nếu có "ngày", "tuần", "tháng", "năm" trước → cũ
         return bool(re.search(
-            r"\d+\s+(?:ngày|tuần|tháng|năm)\s+trước",
+            r"[2-9]\d*\s+(?:ngày|tuần|tháng|năm)\s+trước"
+            r"|1\s+(?:tuần|tháng|năm)\s+trước",
             posted_text,
             re.IGNORECASE,
         ))
