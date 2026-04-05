@@ -39,8 +39,17 @@ CLOSESPIDER_TIMEOUT    = 0
 ROBOTSTXT_OBEY               = False
 CONCURRENT_REQUESTS          = 1
 CONCURRENT_REQUESTS_PER_DOMAIN = 1
-DOWNLOAD_DELAY               = 2
-RANDOMIZE_DOWNLOAD_DELAY     = True   # delay thực tế = 1~3s, tránh bị ban
+DOWNLOAD_DELAY               = 4        # tăng từ 2 → 4
+RANDOMIZE_DOWNLOAD_DELAY     = True     # thực tế 4~8s
+
+# =========================================================
+#  Retry — xử lý 403 từ TopCV
+# =========================================================
+RETRY_ENABLED    = True
+RETRY_TIMES      = 3
+RETRY_HTTP_CODES = [403, 429, 500, 502, 503, 504]
+RETRY_BACKOFF_BASE = 2   # chờ 2s, 4s, 8s trước mỗi lần retry
+DOWNLOAD_TIMEOUT = 30  
 
 # =========================================================
 #  Headers mặc định

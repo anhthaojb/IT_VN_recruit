@@ -357,7 +357,7 @@ _CREATE_TABLE_SQL = """
 """
 
 _INSERT_SQL = """
-    INSERT IGNORE INTO jobs (
+    INSERT INTO jobs (
         website, job_title, company_title, location,
         experience, compensation, job_type, work_mode,
         level, job_url, company_size, company_industry,
@@ -370,6 +370,14 @@ _INSERT_SQL = """
         %s,%s,%s,%s, %s,%s,%s,
         %s,%s, %s,%s,%s, %s,%s
     )
+    ON DUPLICATE KEY UPDATE
+        job_title = VALUES(job_title),
+        compensation = VALUES(compensation),
+        job_description = VALUES(job_description),
+        job_requirement= VALUES(job_requirement),
+        job_posted_at = VALUES(job_posted_at),
+        scraped_at = VALUES(scraped_at),
+        is_valid = VALUES(is_valid);
 """
 
 
