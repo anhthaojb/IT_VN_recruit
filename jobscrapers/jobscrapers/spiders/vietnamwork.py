@@ -21,13 +21,8 @@ class VietnamworkSpider(scrapy.Spider):
 
     @staticmethod
     def _is_old(posted_text: str) -> bool:
-        """
-        Vietnamworks API trả về ISO format: "2026-03-28T10:30:00"
-        So sánh với hôm nay.
-        """
         if not posted_text:
             return False
-        # ISO datetime: "2026-03-28T10:30:00" hoặc "2026-03-28"
         m = re.match(r"(\d{4})-(\d{2})-(\d{2})", posted_text.strip())
         if m:
             try:
@@ -38,6 +33,15 @@ class VietnamworkSpider(scrapy.Spider):
             except ValueError:
                 pass
         return False
+
+    @staticmethod
+    def strip_html(text: str) -> str:
+        if not text:
+            return ""
+        text = html_lib.unescape(text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
 
     # ------------------------------------------------------------------
     # start
@@ -57,8 +61,8 @@ class VietnamworkSpider(scrapy.Spider):
             method="POST",
             headers={
                 "Content-Type": "application/json",
-                "Accept"       : "application/json",
-                "Referer"      : "https://www.vietnamworks.com/",
+                "Accept"      : "application/json",
+                "Referer"     : "https://www.vietnamworks.com/",
             },
             body=json.dumps(payload),
             callback=self.parse,
@@ -66,7 +70,7 @@ class VietnamworkSpider(scrapy.Spider):
         )
 
     # ------------------------------------------------------------------
-    # parse — nhận JSON từ API
+    # parse — lấy trực tiếp từ search API, không cần detail
     # ------------------------------------------------------------------
 
     def parse(self, response, page=0):
@@ -84,72 +88,89 @@ class VietnamworkSpider(scrapy.Spider):
         )
 
         for job in jobs:
-            # Daily mode: kiểm tra ngày đăng từ JSON trước khi map
             approved_on = job.get("approvedOn", "")
+
             if self._get_mode() == "daily" and self._is_old(approved_on):
                 self.logger.info(
                     f"[vietnamwork][daily] Gặp job cũ ({approved_on!r}) — dừng"
                 )
                 self.stopped = True
-                return   # bỏ qua toàn bộ job còn lại trên trang này
+                return
 
             yield self._map_job(job)
 
-        # Sang page tiếp nếu còn và chưa dừng
         if not self.stopped and page + 1 < nb_pages:
             yield self._build_request(page=page + 1)
 
     # ------------------------------------------------------------------
-    # Helpers
+    # _map_job — map từ search API data
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def strip_html(text: str) -> str:
-        if not text:
-            return ""
-        text = html_lib.unescape(text)
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = re.sub(r"\s+", " ", text)
-        return text.strip()
-
     def _map_job(self, job: dict) -> JobItem:
-        # Lương
+        # ── Lương ──────────────────────────────────────────────────
         salary_min = job.get("salaryMin", 0)
         salary_max = job.get("salaryMax", 0)
         currency   = job.get("salaryCurrency", "")
         if salary_min or salary_max:
             compensation = f"{salary_min:,} - {salary_max:,} {currency}".strip()
         else:
-            compensation = job.get("prettySalary", "Thương lượng")
+            compensation = job.get("prettySalary", "Thỏa thuận")
 
-        # Địa điểm — lấy city đầu tiên
+        # ── Địa điểm ───────────────────────────────────────────────
         locations = job.get("workingLocations") or []
         location  = locations[0].get("cityNameVI", "") if locations else ""
 
-        # Ngành
+        # ── Ngành nghề ─────────────────────────────────────────────
         industries = job.get("industriesV3") or []
-        industry   = industries[0].get("industryV3NameVI", "") if industries else ""
+        company_industry = ", ".join(
+            i.get("industryV3NameVI", "") for i in industries
+            if i.get("industryV3NameVI")
+        )
+
+        # ── Job category ───────────────────────────────────────────
+        job_func     = job.get("jobFunction") or {}
+        children     = job_func.get("children") or []
+        job_category = (
+            children[0].get("nameVI", "")
+            if children
+            else job_func.get("parentNameVI", "")
+        )
+
+        # ── Mô tả ──────────────────────────────────────────────────
+        job_description = self.strip_html(job.get("jobDescription", ""))
+        job_requirement = self.strip_html(job.get("jobRequirement", ""))
+
+        # ── Skills → nối vào cuối job_description ──────────────────
+        skills_raw = job.get("skills") or []
+        if skills_raw:
+            skills_str = "Skills: " + ", ".join(
+                s.get("skillName", "") for s in skills_raw if s.get("skillName")
+            )
+            job_description = (
+                (job_description + "\n\n" + skills_str).strip()
+                if job_description else skills_str
+            )
 
         item = JobItem()
-        item["website"]         = "vietnamwork"
-        item["job_url"]         = job.get("jobUrl", "")
-        item["job_title"]       = job.get("jobTitle", "")
-        item["location"]        = location
-        item["experience"]      = str(job.get("yearsOfExperience", ""))
-        item["compensation"]    = compensation
-        item["job_type"]        = str(job.get("typeWorkingId", ""))
-        item["work_mode"]       = ""
-        item["level"]           = job.get("jobLevelVI", "")
-        item["company_title"]   = job.get("companyName", "")
-        item["company_size"]    = str(job.get("companySize", ""))
-        item["company_industry"]= industry
-        item["job_category"]    = ""
-        item["number_recruit"]  = ""
-        item["education_level"] = str(job.get("highestDegreeId", ""))
-        item["job_description"] = self.strip_html(job.get("jobDescription", ""))
-        item["job_requirement"] = self.strip_html(job.get("jobRequirement", ""))
-        item["job_posted_at"]   = job.get("approvedOn", "")
-        item["job_deadline"]    = job.get("expiredOn", "")
-        item["scraped_at"]      = datetime.now()
+        item["website"]          = "vietnamwork"
+        item["job_url"]          = job.get("jobUrl", "")
+        item["job_title"]        = job.get("jobTitle", "")
+        item["location"]         = location
+        item["experience"]       = str(job.get("yearsOfExperience", ""))
+        item["compensation"]     = compensation
+        item["job_type"]         = str(job.get("typeWorkingId", ""))
+        item["work_mode"]        = ""
+        item["level"]            = str(job.get("jobLevelId", ""))
+        item["company_title"]    = job.get("companyName", "")
+        item["company_size"]     = str(job.get("companySizeId", ""))
+        item["company_industry"] = company_industry
+        item["job_category"]     = job_category
+        item["number_recruit"]   = ""
+        item["education_level"]  = str(job.get("highestDegreeId", ""))
+        item["job_description"]  = job_description
+        item["job_requirement"]  = job_requirement
+        item["job_posted_at"]    = job.get("approvedOn", "")
+        item["job_deadline"]     = job.get("expiredOn", "")
+        item["scraped_at"]       = datetime.now()
 
         return item
