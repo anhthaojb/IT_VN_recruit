@@ -1,6 +1,8 @@
+import sys
 import time
 import os
 import re
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import json
 import signal
 import argparse
@@ -14,9 +16,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException
-from jobscrapers.pipelines import clean_dict as clean_item, get_db_connection, save_to_db
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "jobscrapers"))
+from bs4 import BeautifulSoup
+from pipelines import clean_dict, get_db_connection, save_to_db
 
 # =========================================================
 #  CONFIG
@@ -26,42 +27,74 @@ MAX_JOBS_PER_KEYWORD = 20
 
 KEYWORDS_BY_CATEGORY = {
     "software_dev": [
-        "software engineer",
-        "backend developer",
-        "frontend developer",
-        "full stack developer",
+        ".NET Developer",
+        "Back End Developer",
+        "Back End Web Developer",
+        "Front End Developer",
+        "Front End Web Developer",
+        "Full Stack Developer",
+        "Full Stack Web Developer",
+        "Java Developer",
+        "Java Web Developer",
+        "NodeJS Developer",
+        "PHP Developer",
+        "Python Developer",
+        "Python Web Developer",
+        "Senior Back End Developer",
+        "Senior Front End Developer",
+        "Senior Full Stack Developer",
+        "Senior Java Developer",
+        "C++ Developer",
+        "Embedded Engineer",
+    ],
+    "mobile": [
+        "Android App Developer",
+        "Android Developer",
+        "Mobile Apps Developer",
+        "iOS Developer",
+    ],
+    "architecture": [
+        "Software Architecture",
+        "Solution Architect",
+        "System Engineer",
+        "System Administrator",
+    ],
+    "management": [
+        "Bridge Project Management",
+        "Business Analysis",
+        "Leadership",
+        "Product Management",
+        "Product Owner",
+        "Senior Product Owner",
+        "Project Management",
+    ],
+    "design_qa": [
+        "UX UI Designer",
+        "Tester",
     ],
     "data": [
-        "data analyst",
-        "data scientist",
-        "data engineer",
-        "business intelligence",
-    ],
-    "devops_cloud": [
-        "devops engineer",
-        "cloud engineer",
-        "site reliability engineer",
-    ],
-    "security": [
-        "cybersecurity",
-        "security engineer",
-        "penetration tester",
+        "Data Analyst",
+        "Data Scientist",
+        "Data Engineer",
+        "Business Intelligence",
+        "Database Administrator",
+        "ETL Developer",
+        "Data Architect",
+        "Big Data Engineer",
+        "Analytics Engineer",
     ],
     "ai_ml": [
-        "machine learning engineer",
-        "AI engineer",
-        "NLP engineer",
+        "AI Engineer",
+        "Machine Learning Engineer",
+        "NLP Engineer",
+        "Computer Vision Engineer",
+        "Deep Learning Engineer",
+        "MLOps Engineer",
+        "Generative AI Engineer",
+        "LLM Engineer",
+        "AI Research Engineer",
     ],
 }
-
-DB_CONFIG = dict(
-    host     = "localhost",
-    user     = "root",
-    password = "123456",
-    database = "itta",
-    charset  = "utf8mb4",
-)
-
 COOKIE_FILE = Path("data") / "itviec_cookies.json"
 
 # =========================================================
@@ -88,14 +121,6 @@ SEL_NEXT_PAGE = [
 # =========================================================
 
 def _is_old(posted_text: str) -> bool:
-    """
-    Trả về True nếu job cũ hơn 1 ngày.
-
-    ITviec dùng format tiếng Anh:
-      "Posted 3 hours ago"   → còn mới → False
-      "Posted 2 days ago"    → cũ      → True
-      "Posted 1 week ago"    → cũ      → True
-    """
     if not posted_text:
         return False
     return bool(re.search(
@@ -105,105 +130,24 @@ def _is_old(posted_text: str) -> bool:
     ))
 
 # =========================================================
-#  MYSQL
+#  DEBUG HELPER
 # =========================================================
 
-def get_db_connection():
-    conn = mysql.connector.connect(**DB_CONFIG)
-    cur  = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS jobs (
-            id               INT          NOT NULL AUTO_INCREMENT,
-            website          VARCHAR(50),
-            job_title        TEXT,
-            company_title    VARCHAR(255),
-            location         VARCHAR(255),
-            experience       VARCHAR(100),
-            compensation     VARCHAR(255),
-            job_type         VARCHAR(100),
-            work_mode        VARCHAR(100),
-            level            VARCHAR(100),
-            job_url          VARCHAR(500)  UNIQUE,
-            company_size     VARCHAR(100),
-            company_industry VARCHAR(255),
-            job_category     VARCHAR(255),
-            number_recruit   VARCHAR(50),
-            education_level  VARCHAR(100),
-            job_description  LONGTEXT,
-            job_requirement  LONGTEXT,
-            job_posted_at    VARCHAR(100),
-            job_deadline     VARCHAR(100),
-            scraped_at       VARCHAR(50),
-            is_valid         TINYINT(1)   DEFAULT 1,
-            error_log        TEXT,
-            PRIMARY KEY (id),
-            INDEX idx_website    (website),
-            INDEX idx_company    (company_title(100)),
-            INDEX idx_location   (location(100)),
-            INDEX idx_is_valid   (is_valid),
-            INDEX idx_scraped_at (scraped_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    """)
-    conn.commit()
-    return conn, cur
+def debug_job_structure(driver):
+    """In ra tất cả h2/h3 và section tìm thấy trên trang detail."""
+    soup = BeautifulSoup(driver.page_source, "html.parser")
 
+    print("\n===== DEBUG HEADINGS =====")
+    for tag in soup.find_all(["h2", "h3"]):
+        parent = tag.find_parent("div") or tag.find_parent("section")
+        print(f"[{tag.name}] '{tag.get_text(strip=True)}'")
+        print(f"  parent classes: {parent.get('class') if parent else 'N/A'}")
+        print()
 
-def save_to_db(cur, conn, item: dict) -> bool:
-    """
-    INSERT IGNORE theo job_url.
-    Trả về True nếu insert thành công, False nếu duplicate hoặc lỗi.
-    """
-    if not item.get("is_valid"):
-        print(f"    ⚠ Invalid — bỏ qua: {item.get('error_log')}")
-        return False
-
-    try:
-        cur.execute("""
-            INSERT IGNORE INTO jobs (
-                website, job_title, company_title, location,
-                experience, compensation, job_type, work_mode,
-                level, job_url, company_size, company_industry,
-                job_category, number_recruit, education_level,
-                job_description, job_requirement,
-                job_posted_at, job_deadline, scraped_at,
-                is_valid, error_log
-            ) VALUES (
-                %s,%s,%s,%s, %s,%s,%s,%s,
-                %s,%s,%s,%s, %s,%s,%s,
-                %s,%s, %s,%s,%s,
-                %s,%s
-            )
-        """, (
-            item.get("website"),
-            item.get("job_title"),
-            item.get("company_title"),
-            item.get("location"),
-            item.get("experience"),
-            item.get("compensation"),
-            item.get("job_type"),
-            item.get("work_mode"),
-            item.get("level"),
-            item.get("job_url"),
-            item.get("company_size"),
-            item.get("company_industry"),
-            item.get("job_category"),
-            item.get("number_recruit"),
-            item.get("education_level"),
-            item.get("job_description"),
-            item.get("job_requirement"),
-            item.get("job_posted_at"),
-            item.get("job_deadline"),
-            item.get("scraped_at"),
-            int(item.get("is_valid", True)),
-            item.get("error_log"),
-        ))
-        conn.commit()
-        return cur.rowcount > 0
-
-    except mysql.connector.Error as e:
-        print(f"    ✗ MySQL error: {e}")
-        conn.rollback()
-        return False
+    print("===== ALL SECTIONS =====")
+    for sec in soup.find_all("section"):
+        print(f"section class={sec.get('class')}, first 80 chars: {sec.get_text()[:80]!r}")
+    print("=========================\n")
 
 # =========================================================
 #  SELENIUM HELPERS
@@ -269,22 +213,35 @@ def get_employer_row(driver, label):
 
 
 def get_paragraph_by_heading(driver, heading_text):
-    try:
-        el = driver.find_element(
-            By.XPATH,
-            f"//section[contains(@class,'job-content')]"
-            f"//div[contains(@class,'paragraph')]"
-            f"[.//h2[contains(text(),'{heading_text}')]]"
-        )
-        return safe_text(el)
-    except Exception:
-        return ""
+    """
+    Parse page_source bằng BeautifulSoup, tìm h2/h3 khớp heading_text,
+    lấy toàn bộ nội dung của block cha chứa nó.
+    """
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+
+    for tag in soup.find_all(["h2", "h3"]):
+        if heading_text.lower() not in tag.get_text(strip=True).lower():
+            continue
+
+        # Đi lên tìm div/section cha gần nhất có nội dung thực
+        parent = tag.find_parent(["div", "section"])
+        while parent:
+            text = parent.get_text(separator="\n", strip=True)
+            # Đủ dài và không phải toàn bộ trang
+            if 50 < len(text) < 8000:
+                return text
+            parent = parent.find_parent(["div", "section"])
+
+    return ""
 
 # =========================================================
 #  PARSE JOB DETAIL
 # =========================================================
 
 def parse_job(driver, keyword, category, list_meta):
+    # ── Bật debug để xem HTML thực tế (tắt sau khi đã xác nhận selector) ──
+    # debug_job_structure(driver)
+
     job_title = get_text_first(driver, ["h1.text-it-black", "h1"])
     if not job_title:
         return None
@@ -326,8 +283,8 @@ def parse_job(driver, keyword, category, list_meta):
             )
             job_posted_at = safe_text(spans[0]) if spans else ""
 
-    skills   = get_text_all(driver, ["a.itag.itag-light.itag-sm"])
-    domain   = get_text_all(driver, ["div.itag.bg-light-grey.itag-sm"])
+    skills = get_text_all(driver, ["a.itag.itag-light.itag-sm"])
+    domain = get_text_all(driver, ["div.itag.bg-light-grey.itag-sm"])
 
     expertise_from_card = list_meta.get("job_expertise", "")
     job_category = (
@@ -342,19 +299,34 @@ def parse_job(driver, keyword, category, list_meta):
             level = kw.capitalize()
             break
 
-    company_size     = get_employer_row(driver, "Company size")
+    company_size = get_employer_row(driver, "Company size")
     company_industry = (
         ", ".join(domain) if domain
         else get_employer_row(driver, "Company industry")
     )
 
+    # ── Job description ────────────────────────────────────────────────────
     job_description = get_paragraph_by_heading(driver, "Job description")
     if not job_description:
-        job_description = get_text_first(driver, ["section.job-content"])
+        job_description = get_paragraph_by_heading(driver, "Mô tả công việc")
+    if not job_description:
+        job_description = get_text_first(driver, [
+            "section.job-content",
+            "div.job-content",
+        ])
 
+    # ── Job requirement ────────────────────────────────────────────────────
     job_requirement = get_paragraph_by_heading(driver, "Your skills and experience")
     if not job_requirement:
+        job_requirement = get_paragraph_by_heading(driver, "Skills and experience")
+    if not job_requirement:
+        job_requirement = get_paragraph_by_heading(driver, "Yêu cầu công việc")
+    if not job_requirement:
         job_requirement = get_paragraph_by_heading(driver, "skills and experience")
+
+    # ── In debug để kiểm tra kết quả ──────────────────────────────────────
+    # print(f"\n  [DEBUG] job_description ({len(job_description)} chars): {job_description[:120]!r}")
+    # print(f"  [DEBUG] job_requirement ({len(job_requirement)} chars): {job_requirement[:120]!r}")
 
     experience = ""
     if job_requirement:
@@ -372,7 +344,7 @@ def parse_job(driver, keyword, category, list_meta):
         "location"        : location,
         "experience"      : experience,
         "compensation"    : compensation,
-        "job_type"        : "",
+        "job_type"        : "Full-time",
         "work_mode"       : work_mode,
         "level"           : level,
         "job_url"         : driver.current_url,
@@ -475,7 +447,6 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode):
             print("  ⚠ Không tìm thấy card")
             break
 
-        # ── Thu thập meta từ tất cả card trên trang ───────────────────
         page_metas = []
         for card in cards:
             try:
@@ -495,16 +466,11 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode):
             except StaleElementReferenceException:
                 continue
 
-        # ── Navigate vào từng detail page ─────────────────────────────
         for meta in page_metas:
             if job_count >= MAX_JOBS_PER_KEYWORD or stop_keyword:
                 break
 
             detail_url = f"https://itviec.com/it-jobs/{meta['slug']}"
-            if detail_url in seen_urls:
-                print(f"  ↩ Đã scrape — bỏ qua: {meta['slug']}")
-                continue
-
             driver.get(detail_url)
             time.sleep(1.2)
 
@@ -516,22 +482,23 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode):
                 continue
 
             real_url = driver.current_url
+
             if real_url in seen_urls:
-                print(f"  ↩ URL thực đã scrape: {real_url}")
+                print(f"  ↩ Đã cào trong session: {real_url}")
                 continue
 
-            raw  = parse_job(driver, keyword, category, meta)
+            raw = parse_job(driver, keyword, category, meta)
             if not raw:
                 print(f"  ✗ Parse thất bại: {meta['slug']}")
                 continue
 
-            item  = clean_item(raw)   # ← dùng selenium_pipelines
+            item  = clean_dict(raw)
             saved = save_to_db(cur, conn, item)
 
             seen_urls.add(real_url)
             job_count += 1
 
-            status = "✅" if saved else "↩ dup"
+            status = "✅ mới" if saved else "🔄 updated"
             print(f"  {status} [{job_count}] {item['job_title']} @ {item['company_title']}")
 
             time.sleep(0.8)
@@ -539,7 +506,6 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode):
         if stop_keyword or job_count >= MAX_JOBS_PER_KEYWORD:
             break
 
-        # ── Sang trang kế ─────────────────────────────────────────────
         driver.get(current_list_url)
         wait_any_css(driver, SEL_JOB_CARDS, timeout=10)
         time.sleep(0.5)
@@ -567,7 +533,6 @@ def init_driver():
         {"profile.managed_default_content_settings.images": 2}
     )
     return uc.Chrome(options=opts, version_main=146)
-    
 
 
 def _is_logged_in(driver):
@@ -610,12 +575,12 @@ def login(driver):
         driver.get("https://itviec.com/it-jobs")
         time.sleep(2)
         if _is_logged_in(driver):
-            print("✓ Đã login từ cookie")
+            print(f"✓ Đã login từ cookie")
             return
         print("Cookie hết hạn — yêu cầu login lại")
         COOKIE_FILE.unlink(missing_ok=True)
 
-    driver.get("https://itviec.com/sign_in")
+    driver.get("https://itviec.com/users/sign_in")
     print("\n" + "="*55)
     print("  Vui lòng ĐĂNG NHẬP THỦ CÔNG trên Chrome vừa mở.")
     print("  Sau khi login xong, quay lại đây nhấn Enter.")
@@ -628,7 +593,7 @@ def login(driver):
         raise Exception("Chưa detect được trạng thái login.")
 
     save_cookies(driver)
-    print("✓ Đăng nhập thành công")
+    print(f"✓ Đăng nhập thành công")
 
 # =========================================================
 #  MAIN
@@ -666,9 +631,8 @@ def main():
     try:
         login(driver)
 
-        cur.execute("SELECT job_url FROM jobs WHERE website='itviec'")
-        seen_urls = {row[0] for row in cur.fetchall()}
-        print(f"URL đã có trong DB: {len(seen_urls)}")
+        seen_urls = set()
+        print("Session mới — sẽ INSERT mới hoặc UPDATE tất cả job tìm thấy")
 
         total   = 0
         summary = {}
@@ -684,7 +648,7 @@ def main():
                 time.sleep(3)
 
         print(f"\n{'='*55}")
-        print(f"🎉 HOÀN THÀNH | mode={mode} | {total} job mới → MySQL")
+        print(f"🎉 HOÀN THÀNH | mode={mode} | {total} job → MySQL")
         print(f"{'='*55}")
         for cat, kw_counts in summary.items():
             cat_total = sum(kw_counts.values())
@@ -693,8 +657,11 @@ def main():
                 print(f"    • {kw!r}: {cnt}")
 
     finally:
-        cur.close()
-        conn.close()
+        try:
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
         try:
             driver.quit()
         except Exception:

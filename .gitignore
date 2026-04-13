@@ -8,3 +8,8 @@ __pycache__/
 # Nếu dùng database local, đừng đẩy file db đi
 *.sqlite3
 chrome_profile_linkedin/
+*.zip
+import_linkedin_jsonl.py
+l.py
+test.ipynb
+*.ipynb
