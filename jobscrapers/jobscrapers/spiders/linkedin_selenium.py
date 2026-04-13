@@ -148,7 +148,7 @@ def safe_text(el):
     try:
         return el.text.strip()
     except StaleElementReferenceException:
-        return ""
+        return None
 
 
 def wait_any_css(driver, css_selectors, timeout=10):
@@ -201,18 +201,18 @@ def _is_old_linkedin(posted_text: str) -> bool:
 
 def _enrich_with_ai(item: dict) -> dict:
     if not AI_ENABLED:
-        item["job_description"] = item.get("raw_about_job", "")
-        item["job_requirement"] = ""
+        item["job_description"] = item.get("raw_about_job")
+        item["job_requirement"] = None
         return item
     try:
         enriched = process_linkedin_item(item)
         if not enriched.get("job_description"):
-            enriched["job_description"] = item.get("raw_about_job", "")
+            enriched["job_description"] = item.get("raw_about_job")
         return enriched
     except Exception as e:
         print(f"    ⚠️  AI error: {e} — fallback về raw_about_job")
-        item["job_description"] = item.get("raw_about_job", "")
-        item["job_requirement"] = ""
+        item["job_description"] = item.get("raw_about_job", None)
+        item["job_requirement"] = None
         return item
 
 
@@ -342,7 +342,7 @@ def parse_job(driver, keyword, category):
     if not job_title:
         return None
 
-    raw_about_job = ""
+    raw_about_job = None
     for sel in ["div#job-details", "div.jobs-description__content", "div.jobs-description-content__text", "article.jobs-description"]:
         els = driver.find_elements(By.CSS_SELECTOR, sel)
         if els:
@@ -353,7 +353,7 @@ def parse_job(driver, keyword, category):
         print(f"    ⚠️  Detail quá ngắn ({len(raw_about_job)} chars) — skip")
         return None
 
-    location = job_posted_at = ""
+    location = job_posted_at = None
     tertiary = driver.find_elements(
         By.CSS_SELECTOR,
         "div.job-details-jobs-unified-top-card__tertiary-description-container "
@@ -366,7 +366,7 @@ def parse_job(driver, keyword, category):
         elif not location and LOC_PAT.match(token) and not TIME_PAT.search(token):
             location = token
 
-    work_mode = job_type = ""
+    work_mode = job_type = None
     WORK_MODE_VALUES = {"on-site", "remote", "hybrid"}
     JOB_TYPE_VALUES  = {"full-time", "part-time", "contract", "internship", "temporary"}
     pref_btns = driver.find_elements(
@@ -381,14 +381,14 @@ def parse_job(driver, keyword, category):
         elif not job_type and lower in JOB_TYPE_VALUES:
             job_type = text
 
-    company_title = ""
+    company_title = None
     els = driver.find_elements(
         By.CSS_SELECTOR, 'a[data-view-name="job-details-about-company-name-link"]'
     )
     if els:
         company_title = els[0].text.strip()
 
-    company_industry = company_size = ""
+    company_industry = company_size = None
     info_divs = driver.find_elements(By.CSS_SELECTOR, "div.jobs-company__box div.t-14.mt5")
     if info_divs:
         spans = info_divs[0].find_elements(By.CSS_SELECTOR, "span.jobs-company__inline-information")
@@ -406,20 +406,20 @@ def parse_job(driver, keyword, category):
         "location"        : location,
         "job_url"         : driver.current_url,
         "job_posted_at"   : job_posted_at,
-        "job_deadline"    : "",
+        "job_deadline"    : None,
         "work_mode"       : work_mode,
         "job_type"        : job_type,
         "company_size"    : company_size,
         "company_industry": company_industry,
         "job_category"    : keyword,
-        "number_recruit"  : "",
+        "number_recruit"  : None,
         "raw_about_job"   : raw_about_job,
-        "job_description" : "",
-        "job_requirement" : "",
-        "compensation"    : "",
-        "level"           : "",
-        "experience"      : "",
-        "education_level" : "",
+        "job_description" : None,
+        "job_requirement" : None,
+        "compensation"    : None,
+        "level"           : None,
+        "experience"      : None,
+        "education_level" : None,
         "scraped_at"      : datetime.now().isoformat(),
         "_search_keyword" : keyword,
         "_category"       : category,
@@ -550,7 +550,7 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode):
             enriched = _enrich_with_ai(raw)
 
             if enriched.get("job_description"):
-                enriched["raw_about_job"] = ""
+                enriched["raw_about_job"] = None
 
             ensure_db_connection(cur, conn)
             cleaned = clean_dict(enriched)

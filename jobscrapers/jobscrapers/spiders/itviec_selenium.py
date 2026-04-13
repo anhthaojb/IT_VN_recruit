@@ -261,7 +261,7 @@ def parse_job(driver, keyword, category, list_meta):
         "div.job-show-info span.normal-text.text-rich-grey",
     ])
 
-    work_mode = list_meta.get("work_mode", "")
+    work_mode = list_meta.get("work_mode")
     if not work_mode:
         preview_items = driver.find_elements(
             By.CSS_SELECTOR, "div.preview-header-item"
@@ -272,7 +272,7 @@ def parse_job(driver, keyword, category, list_meta):
             )
             work_mode = safe_text(spans[0]) if spans else ""
 
-    job_posted_at = list_meta.get("job_posted_at", "")
+    job_posted_at = list_meta.get("job_posted_at")
     if not job_posted_at:
         preview_items = driver.find_elements(
             By.CSS_SELECTOR, "div.preview-header-item"
@@ -286,13 +286,13 @@ def parse_job(driver, keyword, category, list_meta):
     skills = get_text_all(driver, ["a.itag.itag-light.itag-sm"])
     domain = get_text_all(driver, ["div.itag.bg-light-grey.itag-sm"])
 
-    expertise_from_card = list_meta.get("job_expertise", "")
+    expertise_from_card = list_meta.get("job_expertise")
     job_category = (
         [expertise_from_card] if expertise_from_card
-        else skills or list_meta.get("skills", [])
+        else skills or list_meta.get("skills")
     )
 
-    level = ""
+    level = None
     for kw in ["fresher", "junior", "mid", "senior", "lead", "manager",
                "director", "principal", "intern", "staff", "associate"]:
         if kw in job_title.lower():
@@ -328,7 +328,7 @@ def parse_job(driver, keyword, category, list_meta):
     # print(f"\n  [DEBUG] job_description ({len(job_description)} chars): {job_description[:120]!r}")
     # print(f"  [DEBUG] job_requirement ({len(job_requirement)} chars): {job_requirement[:120]!r}")
 
-    experience = ""
+    experience = None
     if job_requirement:
         m = re.search(
             r"(\d+)\+?\s*(?:năm|year)s?\s*(?:of\s*)?(?:kinh nghiệm|experience)",
@@ -351,12 +351,12 @@ def parse_job(driver, keyword, category, list_meta):
         "company_size"    : company_size,
         "company_industry": company_industry,
         "job_category"    : job_category,
-        "number_recruit"  : "",
-        "education_level" : "",
+        "number_recruit"  : None,
+        "education_level" : None,
         "job_description" : job_description,
         "job_requirement" : job_requirement,
         "job_posted_at"   : job_posted_at,
-        "job_deadline"    : "",
+        "job_deadline"    : None,
         "scraped_at"      : datetime.now().isoformat(),
         "skills"          : skills,
         "_search_keyword" : keyword,
