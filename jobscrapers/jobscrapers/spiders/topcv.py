@@ -165,7 +165,7 @@ class TopcvSpider(scrapy.Spider):
             "//div[@class='company-title' and contains(normalize-space(),'Lĩnh vực:')]"
             "/following-sibling::div[@class='company-value']//text()"
         )
-        item["job_category"]     = ""
+        item["job_category"]     = None
         item["number_recruit"]   = xpath(
             "//div[div[contains(text(),'Số lượng tuyển')]]/div[contains(@class,'value')]//text()"
         )
@@ -180,7 +180,7 @@ class TopcvSpider(scrapy.Spider):
             "//h3[contains(text(),'Yêu cầu ứng viên')]"
             "/following-sibling::div[@class='job-description__item--content']//*//text()"
         )
-        item["job_posted_at"]    = job_posted_at
+        item["job_posted_at"]    = job_posted_at or None
         item["job_deadline"] = css("div.job-detail__info--deadline-date::text")
         item["scraped_at"]       = datetime.now()
 

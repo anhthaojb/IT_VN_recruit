@@ -153,24 +153,24 @@ class VietnamworkSpider(scrapy.Spider):
 
         item = JobItem()
         item["website"]          = "vietnamwork"
-        item["job_url"]          = job.get("jobUrl", "")
-        item["job_title"]        = job.get("jobTitle", "")
-        item["location"]         = location
-        item["experience"]       = str(job.get("yearsOfExperience", ""))
+        item["job_url"]          = job.get("jobUrl")
+        item["job_title"]        = job.get("jobTitle")
+        item["location"]         = location or None
+        item["experience"]       = job.get("yearsOfExperience")
         item["compensation"]     = compensation
-        item["job_type"]         = str(job.get("typeWorkingId", ""))
-        item["work_mode"]        = ""
-        item["level"]            = str(job.get("jobLevelId", ""))
-        item["company_title"]    = job.get("companyName", "")
-        item["company_size"]     = str(job.get("companySizeId", ""))
-        item["company_industry"] = company_industry
-        item["job_category"]     = job_category
-        item["number_recruit"]   = ""
-        item["education_level"]  = str(job.get("highestDegreeId", ""))
-        item["job_description"]  = job_description
-        item["job_requirement"]  = job_requirement
-        item["job_posted_at"]    = job.get("approvedOn", "")
-        item["job_deadline"]     = job.get("expiredOn", "")
+        item["job_type"]         = job.get("typeWorkingId")
+        item["work_mode"]        = None
+        item["level"]            = job.get("jobLevelId")
+        item["company_title"]    = job.get("companyName")
+        item["company_size"]     = job.get("companySizeId")
+        item["company_industry"] = company_industry or None
+        item["job_category"]     = job_category or None
+        item["number_recruit"]   = None
+        item["education_level"]  = job.get("highestDegreeId")
+        item["job_description"]  = job_description or None
+        item["job_requirement"]  = job_requirement or None
+        item["job_posted_at"]    = job.get("approvedOn")
+        item["job_deadline"]     = job.get("expiredOn")
         item["scraped_at"]       = datetime.now()
 
         return item

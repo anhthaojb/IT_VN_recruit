@@ -132,7 +132,7 @@ class Vieclam24hSpider(scrapy.Spider):
         item["website"]          = "vieclam24h"
         item["job_url"]          = response.url
         item["job_title"]        = response.css("h1::text").get("").strip()
-        item["job_posted_at"]    = job_posted_at  # dùng lại biến đã có
+        item["job_posted_at"]    = job_posted_at or None  # dùng lại biến đã có
         item["compensation"]     = xpath(
             "//div[div[text()='Mức lương']]/div[contains(@class,'text-14')]/text()"
         )
@@ -160,7 +160,7 @@ class Vieclam24hSpider(scrapy.Spider):
         item["job_type"]         = xpath(
             "//div[./div[text()='Hình thức làm việc']]/div[2]/text()"
         )
-        item["job_category"]     = ""
+        item["job_category"]     = None
         item["job_description"]  = xpath_all(
             "//h2[contains(text(),'Mô tả công việc')]"
             "/following-sibling::div[1]//text()"
@@ -169,7 +169,7 @@ class Vieclam24hSpider(scrapy.Spider):
             "//h2[contains(text(),'Yêu cầu công việc')]"
             "/following-sibling::div[1]//text()"
         )
-        item["work_mode"]        = ""
+        item["work_mode"]        = None
         item["company_title"]    = xpath(
             "//i[contains(@class,'svicon-users')]"
             "/ancestor::div[contains(@class,'flex flex-col gap-3')]"

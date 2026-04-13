@@ -111,18 +111,18 @@ class CareervietSpider(scrapy.Spider):
         item["job_type"]         = xpath(
             '//li[.//strong[contains(.,"Hình thức")]]/p/text()'
         )
-        item["work_mode"]        = ""
+        item["work_mode"]        = None
         item["level"]            = xpath(
             '//li[.//strong[contains(.,"Cấp bậc")]]/p/text()'
         )
-        item["company_title"]    = ""  # điền ở parse_company_info
-        item["company_size"]     = ""  # điền ở parse_company_info
+        item["company_title"]    = None  # điền ở parse_company_info
+        item["company_size"]     = None  # điền ở parse_company_info
         item["company_industry"] = xpath(
             '//li[.//strong[contains(.,"Ngành nghề")]]/p//text()'
         )
-        item["job_category"]     = ""
-        item["number_recruit"]   = ""
-        item["education_level"]  = edu_texts[-1].strip() if edu_texts else ""
+        item["job_category"]     = None
+        item["number_recruit"]   = None
+        item["education_level"]  = edu_texts[-1].strip() if edu_texts else None
         item["job_description"]  = xpath_all(
             '//div[h2[contains(text(),"Mô tả Công việc")]]//div//text()'
         )

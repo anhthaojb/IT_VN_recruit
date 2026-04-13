@@ -127,7 +127,7 @@ class CareerlinkSpider(scrapy.Spider):
         item["job_type"]         = xpath(
             "//div[contains(text(),'Loại công việc')]/following-sibling::div/text()"
         )
-        item["work_mode"]        = ""
+        item["work_mode"]        = None
         item["level"]            = xpath(
             "//div[contains(text(),'Cấp bậc')]/following-sibling::div/text()"
         )
@@ -144,8 +144,8 @@ class CareerlinkSpider(scrapy.Spider):
             ).getall()
             if t.strip()
         )
-        item["job_category"]     = ""
-        item["number_recruit"]   = ""
+        item["job_category"]     = None
+        item["number_recruit"]   = None
         item["education_level"]  = xpath(
             "//div[contains(text(),'Học vấn')]/following-sibling::div/text()"
         )
@@ -155,7 +155,7 @@ class CareerlinkSpider(scrapy.Spider):
         item["job_requirement"]  = xpath_all(
             '//div[@id="section-job-skills"]//div[contains(@class,"rich-text-content")]//text()'
         )
-        item["job_posted_at"]    = job_posted_at
+        item["job_posted_at"]    = job_posted_at or None
         item["job_deadline"]     = xpath(
             "//div[@id='job-date']//div[contains(@class,'day-expired')]//b/text()"
         )

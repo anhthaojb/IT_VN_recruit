@@ -108,7 +108,7 @@ class Timviec365Spider(scrapy.Spider):
         item["job_title"]        = response.css(
             ".boxTitleNameNtd h1::text"
         ).get("").strip()
-        item["job_posted_at"]    = job_posted_at
+        item["job_posted_at"]    = job_posted_at or None
         item["location"]         = xpath(
             "//p[text()='Địa điểm']/following-sibling::p/text()"
         )
@@ -121,7 +121,7 @@ class Timviec365Spider(scrapy.Spider):
         item["job_type"]         = xpath(
             "//p[text()='Hình thức làm việc']/following-sibling::p/text()"
         )
-        item["work_mode"]        = ""
+        item["work_mode"]        = None
         item["level"]            = xpath(
             "//p[text()='Chức vụ']/following-sibling::p/text()"
         )
@@ -146,7 +146,7 @@ class Timviec365Spider(scrapy.Spider):
         item["company_title"]    = response.css(
             ".boxTitleNameNtd a::text"
         ).get("").strip()
-        item["company_size"]     = ""
+        item["company_size"]     = None
         item["company_industry"] = xpath_all(
     "//p[contains(text(),'Ngành nghề')]/following-sibling::div//a/text()"
 )

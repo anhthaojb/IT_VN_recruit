@@ -173,13 +173,13 @@ class JobsgoSpider(scrapy.Spider):
             "//div[contains(@class,'text-muted') and contains(text(),'Ngành nghề:')]"
             "/following-sibling::strong//a/text()"
         ).getall()).strip()
-        item["work_mode"]      = ""
+        item["work_mode"]      = None
         item["number_recruit"] = response.xpath(
     "//span[contains(@class,'text-muted') and contains(text(),'Số lượng tuyển:')]"
     "/following-sibling::strong/text()"
 ).get("").strip()
-        item["company_size"]   = ""   # điền ở parse_company_page
-        item["company_industry"]= ""  # điền ở parse_company_page
+        item["company_size"]   = None   # điền ở parse_company_page
+        item["company_industry"]= None  # điền ở parse_company_page
         item["scraped_at"]     = datetime.now()
 
         company_url = response.css("div.card-company a::attr(href)").get()
