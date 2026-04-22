@@ -17,7 +17,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException
 from bs4 import BeautifulSoup
-from pipelines import clean_dict, get_db_connection, save_to_db
+from pipelines import RunTracker, clean_dict, get_db_connection, save_to_db
 
 # =========================================================
 #  CONFIG
@@ -120,14 +120,21 @@ SEL_NEXT_PAGE = [
 #  KIỂM TRA NGÀY — dùng cho daily mode
 # =========================================================
 
-def _is_old(posted_text: str) -> bool:
-    if not posted_text:
+# def _is_old(posted_text: str) -> bool:
+#     if not posted_text:
+#         return False
+#     return bool(re.search(
+#         r"\d+\s+(?:day|week|month|year)s?\s+ago",
+#         posted_text,
+#         re.IGNORECASE,
+#     ))
+def _is_old(posted_text: str, max_days: int = 3) -> bool:
+    m = re.search(r"(\d+)\s+(day|week|month|year)s?\s+ago", posted_text, re.IGNORECASE)
+    if not m:
         return False
-    return bool(re.search(
-        r"\d+\s+(?:day|week|month|year)s?\s+ago",
-        posted_text,
-        re.IGNORECASE,
-    ))
+    n, unit = int(m.group(1)), m.group(2).lower()
+    age = {"day": n, "week": n*7, "month": n*30, "year": n*365}.get(unit, 0)
+    return age > max_days
 
 # =========================================================
 #  DEBUG HELPER
@@ -424,7 +431,7 @@ def _click_next_page(driver):
         return False
 
 
-def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode):
+def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracker):
     search_url = f"https://itviec.com/it-jobs?query={quote_plus(keyword)}"
     driver.get(search_url)
     print(f"\n[{category}] {keyword!r}")
@@ -493,12 +500,13 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode):
                 continue
 
             item  = clean_dict(raw)
-            saved = save_to_db(cur, conn, item)
+            ok, status = save_to_db(cur, conn, item)
+            tracker.record(status, item)
 
             seen_urls.add(real_url)
             job_count += 1
 
-            status = "✅ mới" if saved else "🔄 updated"
+            status = "✅ mới" if status == "new" else "🔄 updated"
             print(f"  {status} [{job_count}] {item['job_title']} @ {item['company_title']}")
 
             time.sleep(0.8)
@@ -506,7 +514,7 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode):
         if stop_keyword or job_count >= MAX_JOBS_PER_KEYWORD:
             break
 
-        driver.get(current_list_url)
+        # driver.get(current_list_url)
         wait_any_css(driver, SEL_JOB_CARDS, timeout=10)
         time.sleep(0.5)
 
@@ -532,7 +540,7 @@ def init_driver():
         "prefs",
         {"profile.managed_default_content_settings.images": 2}
     )
-    return uc.Chrome(options=opts, version_main=146)
+    return uc.Chrome(options=opts)
 
 
 def _is_logged_in(driver):
@@ -580,7 +588,7 @@ def login(driver):
         print("Cookie hết hạn — yêu cầu login lại")
         COOKIE_FILE.unlink(missing_ok=True)
 
-    driver.get("https://itviec.com/users/sign_in")
+    driver.get("https://itviec.com/sign_in")
     print("\n" + "="*55)
     print("  Vui lòng ĐĂNG NHẬP THỦ CÔNG trên Chrome vừa mở.")
     print("  Sau khi login xong, quay lại đây nhấn Enter.")
@@ -627,6 +635,7 @@ def main():
     signal.signal(signal.SIGINT, _exit)
 
     conn, cur = get_db_connection()
+    tracker = RunTracker(website="itviec", cur=cur, conn=conn)
 
     try:
         login(driver)
@@ -641,7 +650,7 @@ def main():
             summary[category] = {}
             for keyword in keywords:
                 count = scrape_keyword(
-                    driver, keyword, category, seen_urls, cur, conn, mode
+                    driver, keyword, category, seen_urls, cur, conn, mode, tracker
                 )
                 summary[category][keyword] = count
                 total += count
@@ -658,6 +667,7 @@ def main():
 
     finally:
         try:
+            tracker.finish()
             cur.close()
             conn.close()
         except Exception:
