@@ -1,5 +1,6 @@
 import scrapy
 import re
+from scrapy_playwright.page import PageMethod
 from datetime import datetime
 from jobscrapers.items import JobItem
 
@@ -7,47 +8,37 @@ from jobscrapers.items import JobItem
 class TopcvSpider(scrapy.Spider):
     name = "topcv"
     allowed_domains = ["topcv.vn"]
-    custom_settings = {
-        "DOWNLOAD_DELAY"            : 5,
-        "RANDOMIZE_DOWNLOAD_DELAY"  : True,   # thực tế 5~10s
-        "RETRY_HTTP_CODES"          : [403, 429, 500, 502, 503, 504],
-        "RETRY_TIMES"               : 3,
-    }
 
     BASE_URL    = "https://www.topcv.vn/tim-viec-lam-cong-nghe-thong-tin-cr257"
     PAGE_PARAMS = "?sort=newp&page={page}&category_family=r257"
 
-    # ------------------------------------------------------------------
-    # Khởi tạo — đọc mode từ settings
-    # ------------------------------------------------------------------
+    custom_settings = {
+        "DOWNLOAD_DELAY"           : 3,
+        "RANDOMIZE_DOWNLOAD_DELAY" : True,
+        "RETRY_HTTP_CODES"         : [429, 500, 502, 503, 504],
+        "RETRY_TIMES"              : 2,
+        "DOWNLOAD_HANDLERS": {
+            "http" : "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+            "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+        },
+        "PLAYWRIGHT_BROWSER_TYPE"               : "chromium",
+        "PLAYWRIGHT_LAUNCH_OPTIONS"             : {"headless": True},
+        "PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT" : 30000,
+    }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.stopped  = False   # flag báo hiệu đã gặp job cũ → dừng
+        self.stopped  = False
         self.max_page = 1
 
     def _get_mode(self):
-        """Đọc CRAWL_MODE từ settings. Mặc định: 'daily'."""
         return getattr(self, "crawler", None) and \
                self.crawler.settings.get("CRAWL_MODE", "daily") or "daily"
 
-    # ------------------------------------------------------------------
-    # Helpers kiểm tra job cũ
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _is_old(posted_text: str) -> bool:
-        """
-        Trả về True nếu job cũ hơn 1 ngày — dùng để dừng daily crawl.
-
-        TopCV dùng format:
-          "Cập nhật 3 giờ trước"   → còn mới   → False
-          "Cập nhật 2 ngày trước"  → cũ        → True
-          "Cập nhật 1 tuần trước"  → cũ        → True
-        """
         if not posted_text:
             return False
-        # Nếu có "ngày", "tuần", "tháng", "năm" trước → cũ
         return bool(re.search(
             r"[2-9]\d*\s+(?:ngày|tuần|tháng|năm)\s+trước"
             r"|1\s+(?:tuần|tháng|năm)\s+trước",
@@ -56,7 +47,7 @@ class TopcvSpider(scrapy.Spider):
         ))
 
     # ------------------------------------------------------------------
-    # start — trang đầu tiên
+    # start — listing page dùng Playwright để qua Cloudflare
     # ------------------------------------------------------------------
 
     async def start(self):
@@ -64,62 +55,74 @@ class TopcvSpider(scrapy.Spider):
             url=self.BASE_URL + self.PAGE_PARAMS.format(page=1),
             callback=self.parse,
             cb_kwargs={"page": 1},
+            meta={
+                "playwright": True,
+                "playwright_page_methods": [
+                    PageMethod(
+                        "wait_for_selector",
+                        "div.job-item-search-result",
+                        timeout=20000,
+                    ),
+                ],
+            },
         )
 
     # ------------------------------------------------------------------
-    # parse — danh sách job theo trang
+    # parse — listing
     # ------------------------------------------------------------------
 
     def parse(self, response, page=1):
-        # Dừng ngay nếu flag đã bật (gặp job cũ ở trang trước)
         if self.stopped:
             return
 
-        # Lần đầu: đọc tổng số trang
         if page == 1:
-            # getall() lấy toàn bộ text nodes, join lại
             pagination_text = " ".join(
                 response.css("#job-listing-paginate-text ::text").getall()
-            ).replace("\xa0", " ")   # thay &nbsp; thành space
-
+            ).replace("\xa0", " ")
             match = re.search(r"/\s*(\d+)\s*trang", pagination_text)
             self.max_page = int(match.group(1)) if match else 1
-            self.logger.info(
-                f"[topcv] Mode={self._get_mode()} | Tổng trang: {self.max_page}"
-    )
+            self.logger.info(f"[topcv] Mode={self._get_mode()} | Tổng trang: {self.max_page}")
 
         for job in response.css("div.job-item-search-result"):
-            job_url    = job.css("h3.title a::attr(href)").get()
-            posted_raw = job.css("label.label-update::text").getall()
+            job_url     = job.css("h3.title a::attr(href)").get()
+            posted_raw  = job.css("label.label-update::text").getall()
             posted_text = posted_raw[-1].strip() if posted_raw else ""
 
-            # ── Daily mode: dừng khi gặp job cũ hơn 1 ngày ────────────
             if self._get_mode() == "daily" and self._is_old(posted_text):
                 self.logger.info(
-                    f"[topcv][daily] Gặp job cũ ({posted_text!r}) "
-                    f"— dừng crawl trang {page}"
+                    f"[topcv][daily] Gặp job cũ ({posted_text!r}) — dừng trang {page}"
                 )
                 self.stopped = True
-                return   # không yield thêm request nào nữa
+                return
 
             if job_url:
                 yield response.follow(
                     job_url,
                     callback=self.parse_job_page,
                     cb_kwargs={"job_posted_at": posted_text},
+                    # Detail page KHÔNG cần Playwright — HTTP thường đủ
                 )
 
-        # ── Sang trang tiếp ────────────────────────────────────────────
         next_page = page + 1
         if next_page <= self.max_page and not self.stopped:
             yield scrapy.Request(
                 url=self.BASE_URL + self.PAGE_PARAMS.format(page=next_page),
                 callback=self.parse,
                 cb_kwargs={"page": next_page},
+                meta={
+                    "playwright": True,
+                    "playwright_page_methods": [
+                        PageMethod(
+                            "wait_for_selector",
+                            "div.job-item-search-result",
+                            timeout=20000,
+                        ),
+                    ],
+                },
             )
 
     # ------------------------------------------------------------------
-    # parse_job_page — chi tiết từng job
+    # parse_job_page — giữ nguyên hoàn toàn
     # ------------------------------------------------------------------
 
     def parse_job_page(self, response, job_posted_at=""):
@@ -135,9 +138,9 @@ class TopcvSpider(scrapy.Spider):
         item = JobItem()
         item["website"]          = "topcv"
         item["job_url"]          = response.url
-        item["job_title"] = response.xpath(
-    "normalize-space(//h1[contains(@class,'job-detail__info--title')])"
-).get("").strip()
+        item["job_title"]        = response.xpath(
+            "normalize-space(//h1[contains(@class,'job-detail__info--title')])"
+        ).get("").strip()
         item["location"]         = xpath_all(
             "//div[contains(text(),'Địa điểm') and contains(@class,'job-detail__info--section-content-title')]"
             "/following-sibling::div//text()"
@@ -181,7 +184,7 @@ class TopcvSpider(scrapy.Spider):
             "/following-sibling::div[@class='job-description__item--content']//*//text()"
         )
         item["job_posted_at"]    = job_posted_at or None
-        item["job_deadline"] = css("div.job-detail__info--deadline-date::text")
+        item["job_deadline"]     = css("div.job-detail__info--deadline-date::text")
         item["scraped_at"]       = datetime.now()
 
         yield item
