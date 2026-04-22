@@ -26,6 +26,7 @@ class JobItem(scrapy.Item):
     job_deadline    = scrapy.Field()
     job_description = scrapy.Field()
     job_requirement = scrapy.Field()
+    raw_about_job     = scrapy.Field()    # Lưu nguyên văn mô tả công việc để phục vụ cho việc fine-tune sau này
 
     # ── Thông tin công ty ──────────────────────────────────
     company_title   = scrapy.Field()

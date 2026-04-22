@@ -87,6 +87,7 @@ PLAYWRIGHT_LAUNCH_OPTIONS = {"headless": True}
 # =========================================================
 ITEM_PIPELINES = {
     "jobscrapers.pipelines.CleaningPipeline"   : 300,
+    # "myproject.pipelines.EnrichPipeline":    200,
     "jobscrapers.pipelines.SaveToMySQLPipeline": 400,
 }
 
