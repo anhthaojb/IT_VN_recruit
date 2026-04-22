@@ -13,3 +13,4 @@ import_linkedin_jsonl.py
 l.py
 test.ipynb
 *.ipynb
+*.svg
