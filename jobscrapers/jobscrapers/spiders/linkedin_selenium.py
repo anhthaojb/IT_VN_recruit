@@ -7,6 +7,8 @@ import random
 import signal
 import argparse
 import pathlib
+import chromedriver_autoinstaller
+chromedriver_autoinstaller.install(no_ssl=True)
 from datetime import datetime
 from urllib.parse import quote_plus, urlparse, parse_qs, urlencode
 from dotenv import load_dotenv
@@ -232,7 +234,7 @@ def init_driver():
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--lang=vi-VN,vi;q=0.9,en-US;q=0.8")
 
-    driver = uc.Chrome(options=opts, version_main=None)
+    driver = uc.Chrome(options=opts, driver_executable_path=chromedriver_autoinstaller.install(), version_main=147)
     driver.set_page_load_timeout(60)
     driver.set_script_timeout(20)
     return driver

@@ -18,7 +18,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException
 from bs4 import BeautifulSoup
 from pipelines import RunTracker, clean_dict, get_db_connection, save_to_db
-
+import chromedriver_autoinstaller
+chromedriver_autoinstaller.install(no_ssl=True)
 # =========================================================
 #  CONFIG
 # =========================================================
@@ -540,7 +541,8 @@ def init_driver():
         "prefs",
         {"profile.managed_default_content_settings.images": 2}
     )
-    return uc.Chrome(options=opts)
+    return uc.Chrome(options=opts, driver_executable_path=chromedriver_autoinstaller.install(), version_main=147)
+
 
 
 def _is_logged_in(driver):
