@@ -110,6 +110,7 @@ PROVINCE_CANONICAL: dict[str, str] = {
 
     # ── Miền Trung ───────────────────────────────────────────────────────────
     "thanh hóa":                "Thanh Hóa",
+    "thanh hóa":                "Thanh Hóa",
     "thanh hoa":                "Thanh Hóa",
     "nghệ an":                  "Nghệ An",
     "nghe an":                  "Nghệ An",
@@ -282,31 +283,59 @@ EXP_BINS: list[tuple[float, float, str]] = [
 # ==============================================================================
 
 LEVEL_MAP: list[tuple[list[str], str]] = [
+    # 0. Intern
     (["intern", "thực tập", "internship", "trainee"],
      "Intern"),
+
+    # 1. Fresher / Entry
     (["fresher", "fresh grad", "mới tốt nghiệp", "entry level", "entry-level"],
      "Fresher"),
-    (["junior"],
+
+    # 2. Junior
+    (["junior", "jr"],
      "Junior"),
+
+    # 3. Mid-level
     (["mid-level", "mid level", "middle", "intermediate"],
      "Mid-level"),
-    (["senior", "experienced", "chuyên gia", "chuyên viên cao cấp", "principal"],
+
+    # 4. Senior
+    (["senior", "sr", "experienced", "chuyên gia", "chuyên viên cao cấp"],
      "Senior"),
-    (["leader", "tech lead", "team lead", "trưởng nhóm"],
-     "Leader"),
-    (["manager", "quản lý", "trưởng phòng", "giám đốc", "director",
-      "head of", "cto", "ceo", r"\bvp\b", "vice president",
-      "c-level", "phó giám đốc", "project manager", r"\bpm\b"],
+
+    # 5. Lead / Leader
+    (["leader", "lead", "tech lead", "team lead", "trưởng nhóm"],
+     "Lead"),
+
+    # 6. Manager
+    (["manager", "quản lý", "trưởng phòng", "project manager", r"\bpm\b"],
      "Manager"),
+
+    # 7. Head
+    (["head", "head of", "trưởng bộ phận"],
+     "Head"),
+
+    # 8. Director
+    (["director", "giám đốc"],
+     "Director"),
+
+    # 9. VP
+    ([r"\bvp\b", "vice president", "phó giám đốc"],
+     "VP"),
+
+    # 10. C-Level
+    (["ceo", "cto", "cfo", "coo", "cmo", "c-level"],
+     "C-Level"),
 ]
 
 EXP_TO_LEVEL: list[tuple[float, float, str]] = [
-    (0.0,  0.001,        "Intern"),
-    (0.0,  1.0,          "Fresher"),
-    (1.0,  3.0,          "Junior"),
+    (0.0,  0.5,          "Intern"),     # <= 6 tháng
+    (0.5,  1.5,          "Fresher"),    # 6 tháng – 1.5 năm
+    (1.5,  3.0,          "Junior"),
     (3.0,  5.0,          "Mid-level"),
     (5.0,  8.0,          "Senior"),
-    (8.0,  float("inf"), "Leader"),
+    (8.0,  12.0,         "Lead"),
+    (12.0, float("inf"), "Manager"),
 ]
 
 EDUCATION_MAP: dict[str, list[str]] = {
@@ -321,183 +350,94 @@ EDUCATION_MAP: dict[str, list[str]] = {
 
 INDUSTRY_TREE: list[dict] = [
 
-# ======================= CÔNG NGHỆ =======================
+    # ======================= CÔNG NGHỆ & KỸ THUẬT SỐ =======================
 
-{"l1": "Công nghệ", "l2": "IT", "l3": "Phần mềm / CNTT",
- "kw": ["phần mềm", "cntt", "công nghệ thông tin", "lập trình",
-        "software", "developer", "backend", "frontend", "fullstack",
-        "web developer", "mobile developer", "app developer",
-        "saas", "system", "api", "microservices","e-commerce", "erp", "crm"]},
+    {"l1": "Công nghệ", "l2": "Phát triển phần mềm và Ứng dụng", 
+     "kw": ["phần mềm", "lập trình", "backend", "frontend", "fullstack", "web developer", "mobile developer", "app developer", "software engineer", "api", "microservices", "saas", "erp", "crm"]},
 
-{"l1": "Công nghệ", "l2": "DATA", "l3": "Data / BI",
- "kw": ["data analyst", "data engineer", "data scientist",
-        "business intelligence", "bi", "etl", "data warehouse",
-        "dashboard", "power bi", "tableau", "sql", "big data"]},
+    {"l1": "Công nghệ", "l2": "Dữ liệu và Trí tuệ nhân tạo", 
+     "kw": ["data analyst", "data engineer", "data scientist", "bi", "business intelligence", "etl", "data warehouse", "dashboard", "power bi", "tableau", "sql", "big data", "machine learning", "ai", "trí tuệ nhân tạo", "nlp", "llm"]},
 
-{"l1": "Công nghệ", "l2": "AI", "l3": "AI / Machine Learning",
- "kw": ["machine learning", "deep learning", "ai", "trí tuệ nhân tạo",
-        "nlp", "computer vision", "llm", "model training"]},
+    {"l1": "Công nghệ", "l2": "An ninh mạng và Hạ tầng hệ thống", 
+     "kw": ["an ninh mạng", "bảo mật", "cyber security", "information security", "soc analyst", "penetration testing", "network", "telecom", "viễn thông", "it infrastructure", "hạ tầng mạng"]},
 
-{"l1": "Công nghệ", "l2": "SEC", "l3": "An ninh mạng",
- "kw": ["an ninh mạng", "bảo mật", "cyber security",
-        "information security", "soc analyst", "penetration testing"]},
+    {"l1": "Công nghệ", "l2": "Điện tử nhúng và Hệ thống điều khiển", 
+     "kw": ["embedded", "nhúng", "firmware", "iot", "vi mạch", "plc", "scada", "tự động hóa", "robotics"]},
 
-{"l1": "Công nghệ", "l2": "HW", "l3": "Phần cứng / Viễn thông",
- "kw": ["phần cứng", "viễn thông", "network", "telecom",
-        "hạ tầng mạng", "it infrastructure"]},
+    {"l1": "Công nghệ", "l2": "Thiết kế kỹ thuật số và Trải nghiệm người dùng", 
+     "kw": ["ui", "ux", "designer", "graphic designer", "figma", "photoshop", "illustrator", "thiết kế đồ họa"]},
 
-{"l1": "Công nghệ", "l2": "EMB", "l3": "Nhúng / IoT",
- "kw": ["embedded", "nhúng", "firmware", "iot",
-        "vi mạch", "plc", "scada", "tự động hóa"]},
+    # ======================= TÀI CHÍNH & KINH DOANH =======================
 
-{"l1": "Công nghệ", "l2": "GAME", "l3": "Game",
- "kw": ["game", "unity", "unreal engine", "game developer"]},
+    {"l1": "Tài chính và Kinh doanh", "l2": "Dịch vụ Tài chính và Ngân hàng", 
+     "kw": ["ngân hàng", "banking", "finance", "tài chính", "đầu tư", "chứng khoán", "quản lý quỹ", "asset management", "forex", "tín dụng"]},
 
-{"l1": "Công nghệ", "l2": "QA", "l3": "QA / Testing",
- "kw": ["tester", "qa engineer", "quality assurance",
-        "automation test", "manual test"]},
+    {"l1": "Tài chính và Kinh doanh", "l2": "Kế toán và Kiểm toán", 
+     "kw": ["kế toán", "kiểm toán", "thuế", "accounting", "audit", "tax", "báo cáo tài chính"]},
 
-{"l1": "Công nghệ", "l2": "DES", "l3": "Thiết kế (UI/UX/Graphic)",
- "kw": ["ui", "ux", "designer", "graphic designer",
-        "figma", "photoshop", "illustrator"]},
+    {"l1": "Tài chính và Kinh doanh", "l2": "Tiếp thị và Truyền thông", 
+     "kw": ["marketing", "digital marketing", "seo", "sem", "content", "branding", "pr", "quảng cáo", "social media", "tổ chức sự kiện"]},
 
+    {"l1": "Tài chính và Kinh doanh", "l2": "Phát triển kinh doanh và Bán hàng", 
+     "kw": ["bán hàng", "sales", "kinh doanh", "business development", "account manager", "chăm sóc khách hàng"]},
 
-# ======================= TÀI CHÍNH & KINH DOANH =======================
+    # ======================= SẢN XUẤT & XÂY DỰNG =======================
 
-{"l1": "Tài chính & Kinh doanh", "l2": "FIN", "l3": "Ngân hàng / Tài chính",
- "kw": ["ngân hàng", "banking", "finance", "financial services",
-        "tài chính", "đầu tư", "quỹ", "asset management",
-        "wealth management", "forex"]},
+    {"l1": "Sản xuất và Công nghiệp", "l2": "Kỹ thuật sản xuất và Năng lượng", 
+     "kw": ["sản xuất", "manufacturing", "cơ khí", "điện tử", "ô tô", "điện lực", "năng lượng", "dầu khí", "oil & gas", "khai khoáng", "qa/qc"]},
 
-{"l1": "Tài chính & Kinh doanh", "l2": "ACC", "l3": "Kế toán / Kiểm toán",
- "kw": ["kế toán", "kiểm toán", "thuế", "accounting", "audit", "tax"]},
+    {"l1": "Xây dựng và Bất động sản", "l2": "Xây dựng và Kiến trúc", 
+     "kw": ["xây dựng", "construction", "kiến trúc", "thi công", "nội thất", "bất động sản", "real estate", "môi giới"]},
 
-{"l1": "Tài chính & Kinh doanh", "l2": "SALE", "l3": "Kinh doanh / Sales",
- "kw": ["bán hàng", "sales", "kinh doanh",
-        "business development", "account manager"]},
+    # ======================= DỊCH VỤ & LOGISTICS =======================
 
-{"l1": "Tài chính & Kinh doanh", "l2": "MKT", "l3": "Marketing & Truyền thông",
- "kw": ["marketing", "digital marketing", "seo", "sem",
-        "content", "branding", "pr", "quảng cáo"]},
+    {"l1": "Thương mại và Dịch vụ", "l2": "Bán lẻ và Thương mại điện tử", 
+     "kw": ["bán lẻ", "retail", "ecommerce", "thương mại điện tử", "fmcg", "phân phối", "siêu thị"]},
 
-{"l1": "Tài chính & Kinh doanh", "l2": "CONS", "l3": "Tư vấn / Consulting",
- "kw": ["consulting", "management consulting",
-        "business consulting", "advisory services",
-        "chiến lược", "tư vấn doanh nghiệp"]},
+    {"l1": "Thương mại và Dịch vụ", "l2": "Du lịch và Dịch vụ lưu trú", 
+     "kw": ["nhà hàng", "khách sạn", "du lịch", "hospitality", "f&b", "spa", "thẩm mỹ", "làm đẹp"]},
 
+    {"l1": "Vận tải và Logistics", "l2": "Quản trị chuỗi cung ứng và Vận tải", 
+     "kw": ["logistics", "vận tải", "supply chain", "kho bãi", "xuất nhập khẩu", "freight", "giao hàng"]},
 
-# ======================= SẢN XUẤT & CÔNG NGHIỆP =======================
+    # ======================= CÔNG & XÃ HỘI =======================
 
-{"l1": "Sản xuất & Công nghiệp", "l2": "MFG", "l3": "Sản xuất / Chế biến",
- "kw": ["sản xuất", "manufacturing", "chế biến",
-        "cơ khí", "điện tử", "ô tô",
-        "qa/qc sản xuất", "quản lý chất lượng"]},
+    {"l1": "Công và Xã hội", "l2": "Y tế và Dược phẩm", 
+     "kw": ["y tế", "bệnh viện", "dược", "pharma", "healthcare", "medical", "thiết bị y tế"]},
 
-{"l1": "Sản xuất & Công nghiệp", "l2": "ENE", "l3": "Điện / Năng lượng",
- "kw": ["điện lực", "năng lượng", "điện mặt trời",
-        "điện gió", "renewable energy"]},
+    {"l1": "Công và Xã hội", "l2": "Giáo dục và Đào tạo", 
+     "kw": ["giáo dục", "đào tạo", "trường học", "education", "teaching", "giảng dạy"]},
 
-{"l1": "Sản xuất & Công nghiệp", "l2": "MIN", "l3": "Khai khoáng / Dầu khí",
- "kw": ["dầu khí", "oil & gas", "khai khoáng", "mỏ"]},
-
-{"l1": "Sản xuất & Công nghiệp", "l2": "AGR", "l3": "Nông - Lâm - Thủy sản",
- "kw": ["nông nghiệp", "chăn nuôi", "thủy sản", "agriculture"]},
-
-{"l1": "Sản xuất & Công nghiệp", "l2": "ENV", "l3": "Môi trường",
- "kw": ["môi trường", "xử lý nước", "waste treatment"]},
-
-
-# ======================= XÂY DỰNG & BẤT ĐỘNG SẢN =======================
-
-{"l1": "Xây dựng & BĐS", "l2": "CON", "l3": "Xây dựng / Kiến trúc",
- "kw": ["xây dựng", "construction", "kiến trúc",
-        "thi công", "nội thất"]},
-
-{"l1": "Xây dựng & BĐS", "l2": "RE", "l3": "Bất động sản",
- "kw": ["bất động sản", "real estate",
-        "môi giới", "property"]},
-
-
-# ======================= THƯƠNG MẠI & DỊCH VỤ =======================
-
-{"l1": "Thương mại & Dịch vụ", "l2": "RET", "l3": "Bán lẻ / E-commerce",
- "kw": ["bán lẻ", "retail", "ecommerce",
-        "thương mại điện tử", "fmcg", "phân phối"]},
-
-{"l1": "Thương mại & Dịch vụ", "l2": "HOS", "l3": "Nhà hàng / Du lịch",
- "kw": ["nhà hàng", "khách sạn", "du lịch",
-        "hospitality", "f&b", "food and beverage"]},
-
-{"l1": "Thương mại & Dịch vụ", "l2": "SVC", "l3": "Dịch vụ tiêu dùng",
- "kw": ["spa", "làm đẹp", "thẩm mỹ",
-        "dịch vụ cá nhân", "chăm sóc khách hàng"]},
-
-
-# ======================= THỂ THAO & GIẢI TRÍ =======================
-
-{"l1": "Thể thao & Giải trí", "l2": "SPORT", "l3": "Thể thao / Fitness / Gym",
- "kw": ["gym", "fitness", "thể hình",
-        "huấn luyện viên", "pt", "yoga",
-        "sports", "personal trainer"]},
-
-{"l1": "Thể thao & Giải trí", "l2": "ENT", "l3": "Giải trí / Media",
- "kw": ["media", "entertainment", "game streaming",
-        "âm nhạc", "phim", "sự kiện"]},
-
-
-# ======================= VẬN TẢI & LOGISTICS =======================
-
-{"l1": "Vận tải & Logistics", "l2": "LOG", "l3": "Logistics / Vận tải",
- "kw": ["logistics", "vận tải", "supply chain",
-        "kho bãi", "xuất nhập khẩu", "freight"]},
-
-
-# ======================= CÔNG & XÃ HỘI =======================
-
-{"l1": "Công & Xã hội", "l2": "MED", "l3": "Y tế / Dược",
- "kw": ["y tế", "bệnh viện", "pharma",
-        "healthcare", "medical"]},
-
-{"l1": "Công & Xã hội", "l2": "EDU", "l3": "Giáo dục / Đào tạo",
- "kw": ["giáo dục", "đào tạo", "trường học",
-        "education", "teaching"]},
-
-{"l1": "Công & Xã hội", "l2": "ADM", "l3": "Hành chính / Nhân sự",
- "kw": ["nhân sự", "hr", "human resources",
-        "hành chính", "administration"]},
-
-{"l1": "Công & Xã hội", "l2": "LEGAL", "l3": "Pháp lý",
- "kw": ["luật", "pháp lý", "legal", "compliance"]},
-
-{"l1": "Công & Xã hội", "l2": "GOV", "l3": "Nhà nước / NGO",
- "kw": ["chính phủ", "nhà nước",
-        "ngo", "tổ chức phi chính phủ",
-        "government"]},
+    {"l1": "Công và Xã hội", "l2": "Quản trị nhân sự và Pháp lý", 
+     "kw": ["nhân sự", "hr", "human resources", "hành chính", "administration", "luật", "pháp lý", "legal"]}
 
 ]
-
 COMPANY_TYPE_PATTERNS = [
-    (r"trách nhiệm hữu hạn một thành viên|trách nhiệm hữu hạn 1 thành viên|trách nhiệm hữu hạn mtv|trách nhiệm hữu hạn|tnhh", "TNHH"),
-    (r"cổ phần|\bjsc\b", "Cổ phần"),
-    (r"hợp danh", "Hợp danh"),
-    (r"doanh nghiệp tư nhân|dntn", "DNTN"),
-    (r"hợp tác xã|htx|cooperative|co-op", "Hợp tác xã"),
-    (r"doanh nghiệp nhà nước|state[- ]owned|so e", "Nhà nước"),
-    (r"doanh nghiệp xã hội|social enterprise", "Xã hội"),
-    (r"\bllc\b", "LLC"),
-    (r"\bltd\.?\b|limited", "Ltd"),
-    (r"co\.?\s*,?\s*ltd\.?", "Co., Ltd"),
-    (r"\binc\.?\b|incorporated", "Inc"),
-    (r"\bcorp\.?\b|corporation", "Corporation"),
-    (r"\bplc\b|public limited company", "PLC"),
-    (r"\bllp\b|limited liability partnership", "LLP"),
-    (r"\blp\b|limited partnership", "LP"),
-    (r"\bgmbh\b", "GmbH"),
-    (r"\bag\b", "AG"),
-    (r"pte\.?\s*ltd\.?", "Pte Ltd"),
-    (r"tập đoàn|group", "Tập đoàn"),
-    (r"holdings?|holding company", "Holding"),
+    # ── Việt Nam ──
+    (r'\btrách\s+nhiệm\s+hữu\s+hạn\b|\btnhh\b',              'TNHH'),
+    (r'\bcổ\s+phần\b|\bjsc\b|\bjoint[\s\-]stock\b|\bctcp\b',  'Cổ phần'),
+    (r'\btập\s+đoàn\b',                                        'Tập đoàn'),
+    (r'\bhợp\s+tác\s+xã\b|\bhtx\b',                           'Hợp tác xã'),   # BUG-3 mới
+    (r'\bdoanh\s+nghiệp\s+tư\s+nhân\b|\bdntn\b',              'Tư nhân'),
+    # ── Nước ngoài ──
+    (r'\bpte\.?\s*ltd\.?\b',                                   'Pte Ltd'),
+    (r'\bllc\b',                                               'LLC'),
+    (r'\bltd\.?\b|\blimited\b|\bco\.?\s*,?\s*ltd\.?\b',       'Ltd'),
+    (r'\binc\.?\b|\bincorporated\b',                           'Inc'),
+    (r'\bcorporation\b|\bcorp\.?\b',                           'Corporation'),
+    (r'\bplc\b',                                               'Plc'),
+    (r'\bgmbh\b',                                              'GmbH'),
+    (r'\bholdings?\b',                                         'Holding'),
+    # ── Loại tổ chức ──
+    (r'\bngân\s+hàng\b|\bbank\b',                              'Ngân hàng'),
+    (r'\btrường\b|\bđại\s+học\b|\bhọc\s+viện\b|\bviện\b',     'Trường/Viện'),   # BUG-3 mới
+    (r'\btrung\s+tâm\b',                                       'Trung tâm'),     # BUG-3 mới
+    (r'\bchi\s+nhánh\b',                                       'Chi nhánh'),
+    # ── Agency/Confidential ──
+    (r"client\b|confidential|employer\s+brand|ẩn\s+danh",     'Confidential'),  # BUG-3 mới
 ]
+ 
+
 
 # FIX: COMPANY_TYPE_STRIP giữ nguyên (dùng riêng trong parse_company_title bằng _COMPANY_NOISE)
 COMPANY_TYPE_STRIP = re.compile(
@@ -509,54 +449,60 @@ COMPANY_TYPE_STRIP = re.compile(
 )
 
 JOB_CATEGORY_MAP: dict[str, str] = {
-    "Project Manager":      "Management",
-    "Project Leader":       "Management",
-    "IT Manager":           "Management",
-    "Tech Lead":            "Management",
+    # --- Management & Consulting ---
+    "Project Manager":      "Management & Consulting",
+    "Project Leader":       "Management & Consulting",
+    "IT Manager":           "Management & Consulting",
+    "Tech Lead":            "Management & Consulting",
+    "IT Consultant":        "Management & Consulting",
 
-    "IT Consultant":        "Consulting",
+    # --- Product Management ---
+    "Product Owner":        "Product Management",
+    "Product Manager":      "Product Management",
+    "Product Executive":    "Product Management",
+    "Business Analyst":     "Product Management", 
 
-    "Product Owner":        "Product",
-    "Product Manager":      "Product",
-    "Product Executive":    "Product",
+    # --- Software Development ---
+    "Full-stack Developer": "Software Development",
+    "Back-end Developer":   "Software Development",
+    "Front-end Developer":  "Software Development",
+    "Mobile Developer":     "Software Development",
+    "Game Developer":       "Software Development",
+    "Embedded Engineer":    "Software Development",
 
-   
+    # --- Testing ---
+    "Tester":               "Testing",
+    "QA - QC":              "Testing",
 
-    "Full-stack Developer": "Development",
-    "Back-end Developer":   "Development",
-    "Front-end Developer":  "Development",
-    "Mobile Developer":     "Development",
-    "Game Developer":       "Development",
-    "Embedded Engineer":    "Development",
+    # --- Cloud & Infrastructure ---
+    "DevOps/DevSecOps":     "Cloud & Infrastructure",
+    "Cloud Engineer":       "Cloud & Infrastructure",
+    "System Engineer":      "Cloud & Infrastructure",
+    "System Admin":         "Cloud & Infrastructure",
 
-    "Tester":               "QA/Testing",
-    "QA - QC":              "QA/Testing",
+    # --- Data Analytics ---
+    "Data Engineer":        "Data Analytics",
+    "Data Analyst":         "Data Analytics",
+    "Data Scientist":       "Data Analytics",
+    "BI Analyst":           "Data Analytics",
+    "Database Engineer":    "Data Analytics",
 
-    "DevOps/DevSecOps":     "Infrastructure",
-    "Cloud Engineer":       "Infrastructure",
-    "System Engineer":      "Infrastructure",
-    "System Admin":         "Infrastructure",
+    # --- AI & Blockchain ---
+    "AI Engineer":          "AI & Blockchain",
+    "Blockchain Engineer":  "AI & Blockchain",
 
-    "Data Engineer":        "Data",
-    "Data Analyst":         "Data",
-    "Data Scientist":       "Data",
-    "BI Analyst":           "Data",
-    "Database Engineer":    "Data",
+    # --- Designing ---
+    "Designer":             "Designing",
 
-    "AI Engineer":          "AI/ML",
-    "Blockchain Engineer":  "Blockchain",
+    # --- Helpdesk ---
+    "IT Support":           "Helpdesk",
 
-    "Designer":             "Design",
+    "ERP/CRM Engineer":     "IT - Khác",
+    "Solution Architect":   "IT - Khác",
 
-    "ERP/CRM Engineer":     "ERP/CRM",
-    "Solution Architect":   "Architecture",
-
-    "IT Support":           "Support",
-
-    "IT Sales":             "Business",
-    "Business Analyst":     "Business",
+    # --- Kinh doanh (Thêm nhóm theo xu hướng tuyển dụng) ---
+    "IT Sales":             "IT - Khác", 
 }
-
 IT_TITLES: frozenset[str] = frozenset(JOB_CATEGORY_MAP.keys()) - {"Designer"}
 
 JOB_TITLE_MAP: dict[str, list[str]] = {
@@ -1048,7 +994,189 @@ MAJOR_MAP: list[tuple[str, list[str]]] = [
     ("Logistics - Quản lý chuỗi cung ứng",
      ["logistics", "xuất nhập khẩu", "quản lý chuỗi cung ứng"]),
 ]
+# ==============================================================================
+# THÊM VÀO lookups.py — sau MAJOR_MAP, trước phần "6. VIETNAMWORKS"
+# ==============================================================================
 
+NON_IT_TITLE_MAP: list[tuple[list[str], str]] = [
+
+    # ── C-Level ──────────────────────────────────────────────────────────────
+    (["tổng giám đốc", "general director", "chief executive officer", "ceo"],
+     "CEO"),
+    (["giám đốc tài chính", "chief financial officer", "cfo"],   "CFO"),
+    (["giám đốc vận hành", "chief operating officer", "coo"],    "COO"),
+    (["giám đốc marketing", "chief marketing officer", "cmo"],   "CMO"),
+    (["giám đốc nhân sự", "chief people officer", "chro"],       "CHRO"),
+
+    # ── Finance & Accounting ─────────────────────────────────────────────────
+    (["kế toán trưởng", "chief accountant"],                     "Chief Accountant"),
+    (["kế toán tổng hợp", "general accountant"],                 "General Accountant"),
+    (["kiểm toán nội bộ", "internal auditor"],                   "Internal Auditor"),
+    (["kiểm toán", "auditor"],                                   "Auditor"),
+    (["chuyên viên thuế", "tax specialist", "tax executive",
+      "tư vấn thuế", "tax consultant"],                          "Tax Specialist"),
+    (["phân tích tài chính", "financial analyst"],               "Financial Analyst"),
+    (["quản lý rủi ro", "risk management", "risk analyst"],      "Risk Analyst"),
+    (["bảo hiểm", "insurance"],                                  "Insurance Executive"),
+    (["môi giới chứng khoán", "securities broker"],              "Securities Broker"),
+    (["chứng khoán", "securities analyst"],                      "Securities Analyst"),
+    (["ngân hàng", "banking officer", "bank officer"],           "Banking Officer"),
+    (["tài chính", "finance executive", "finance officer"],      "Finance Executive"),
+    (["kế toán", "accountant"],                                  "Accountant"),
+    (["thuế", "tax"],                                            "Tax Executive"),
+
+    # ── HR ───────────────────────────────────────────────────────────────────
+    (["trưởng phòng nhân sự", "hr manager", "hr director"],      "HR Manager"),
+    (["hrbp", "hr business partner"],                            "HRBP"),
+    (["talent acquisition", "tuyển dụng cấp cao"],               "Talent Acquisition Specialist"),
+    (["tuyển dụng", "recruiter", "recruitment"],                 "Recruiter"),
+    (["l&d", "learning and development", "learning & development"],
+                                                                  "L&D Executive"),
+    (["c&b", "compensation and benefit", "compensation & benefit"],
+                                                                  "C&B Executive"),
+    (["nhân sự", "human resource", "hr executive", "hr staff"],  "HR Executive"),
+
+    # ── Admin / Office ───────────────────────────────────────────────────────
+    (["thư ký", "secretary"],                                    "Secretary"),
+    (["trợ lý giám đốc", "executive assistant"],                 "Executive Assistant"),
+    (["trợ lý", "assistant"],                                    "Assistant"),
+    (["lễ tân", "receptionist", "front desk"],                   "Receptionist"),
+    (["hành chính", "administrative", "admin executive",
+      "admin officer"],                                           "Admin Executive"),
+
+    # ── Marketing & Communications ───────────────────────────────────────────
+    (["trưởng phòng marketing", "marketing manager"],            "Marketing Manager"),
+    (["digital marketing manager"],                               "Digital Marketing Manager"),
+    (["performance marketing", "paid ads", "google ads",
+      "facebook ads", "sem"],                                     "Performance Marketing Specialist"),
+    (["digital marketing"],                                       "Digital Marketing Specialist"),
+    (["seo specialist", "seo executive"],                         "SEO Specialist"),
+    (["content marketing manager"],                               "Content Marketing Manager"),
+    (["content writer", "copywriter", "content creator",
+      "content marketing"],                                       "Content Writer"),
+    (["truyền thông", "communications", "public relations",
+      "pr executive", "pr manager"],                              "PR Executive"),
+    (["brand manager", "quản lý thương hiệu"],                   "Brand Manager"),
+    (["brand", "thương hiệu"],                                   "Brand Executive"),
+    (["social media manager"],                                    "Social Media Manager"),
+    (["social media"],                                            "Social Media Executive"),
+    (["tổ chức sự kiện", "event manager", "event planner"],      "Event Manager"),
+    (["event coordinator", "event executive"],                    "Event Executive"),
+    (["marketing"],                                               "Marketing Executive"),
+    (["seo"],                                                     "SEO Specialist"),
+
+    # ── Sales / Business Development ─────────────────────────────────────────
+    (["giám đốc kinh doanh", "sales director", "commercial director"],
+                                                                  "Sales Director"),
+    (["trưởng phòng kinh doanh", "sales manager"],               "Sales Manager"),
+    (["phát triển kinh doanh", "business development manager"],  "Business Development Manager"),
+    (["phát triển kinh doanh", "business development"],          "Business Development Executive"),
+    (["account manager"],                                         "Account Manager"),
+    (["account executive"],                                       "Account Executive"),
+    (["telesale", "telesales"],                                  "Telesales Executive"),
+    (["kinh doanh", "bán hàng", "sales executive"],              "Sales Executive"),
+
+    # ── Customer Service ─────────────────────────────────────────────────────
+    (["customer success manager"],                                "Customer Success Manager"),
+    (["chăm sóc khách hàng", "customer service", "customer support",
+      "customer success", "dịch vụ khách hàng"],                 "Customer Service Executive"),
+    (["after sales", "chăm sóc sau bán"],                        "After-Sales Executive"),
+
+    # ── Logistics & Supply Chain ─────────────────────────────────────────────
+    (["quản lý chuỗi cung ứng", "supply chain manager"],         "Supply Chain Manager"),
+    (["xuất nhập khẩu", "import export", "customs declaration"], "Import/Export Specialist"),
+    (["quản lý kho", "warehouse manager"],                       "Warehouse Manager"),
+    (["kho vận", "thủ kho", "warehouse staff"],                  "Warehouse Staff"),
+    (["mua hàng", "purchasing manager", "procurement manager"],  "Procurement Manager"),
+    (["mua hàng", "purchasing", "procurement"],                  "Procurement Executive"),
+    (["giao nhận", "freight forwarder"],                         "Freight Forwarder"),
+    (["vận tải", "transport", "freight"],                        "Transport Executive"),
+    (["logistics", "chuỗi cung ứng", "supply chain"],           "Logistics Executive"),
+
+    # ── Legal & Compliance ───────────────────────────────────────────────────
+    (["pháp chế", "legal counsel", "in-house lawyer", "luật sư"],
+                                                                  "Legal Counsel"),
+    (["compliance manager", "quản lý tuân thủ"],                 "Compliance Manager"),
+    (["compliance", "tuân thủ"],                                 "Compliance Executive"),
+    (["hợp đồng", "contract specialist"],                        "Contract Specialist"),
+    (["pháp lý", "legal executive", "legal officer"],            "Legal Executive"),
+
+    # ── Education ────────────────────────────────────────────────────────────
+    (["giảng viên", "lecturer", "giáo viên đại học"],            "Lecturer"),
+    (["giáo viên", "teacher"],                                   "Teacher"),
+    (["gia sư", "tutor"],                                        "Tutor"),
+    (["chuyên viên đào tạo", "trainer"],                         "Trainer"),
+
+    # ── Healthcare / Pharma ──────────────────────────────────────────────────
+    (["bác sĩ", "physician", "doctor"],                          "Doctor"),
+    (["dược sĩ", "pharmacist"],                                  "Pharmacist"),
+    (["điều dưỡng", "y tá", "nurse"],                           "Nurse"),
+    (["kỹ thuật viên xét nghiệm", "lab technician"],             "Lab Technician"),
+    (["y tế", "healthcare", "medical officer"],                  "Healthcare Executive"),
+    (["dược", "pharma"],                                         "Pharma Executive"),
+
+    # ── Construction & Real Estate ───────────────────────────────────────────
+    (["kiến trúc sư", "architect"],                              "Architect"),
+    (["thiết kế nội thất", "interior designer"],                 "Interior Designer"),
+    (["môi giới bất động sản", "real estate agent"],             "Real Estate Agent"),
+    (["bất động sản", "real estate"],                            "Real Estate Executive"),
+    (["giám sát công trình", "site supervisor", "site engineer"], "Site Engineer"),
+    (["xây dựng", "construction executive"],                     "Construction Executive"),
+    (["mep engineer", "cơ điện lạnh"],                          "MEP Engineer"),
+
+    # ── Engineering (Non-IT / Mechanical / Electrical) ───────────────────────
+    (["kỹ sư cơ khí", "mechanical engineer"],                    "Mechanical Engineer"),
+    (["kỹ sư điện tử", "electronics engineer"],                  "Electronics Engineer"),
+    (["kỹ sư điện", "electrical engineer"],                      "Electrical Engineer"),
+    (["kỹ sư hóa", "chemical engineer"],                         "Chemical Engineer"),
+    (["kỹ sư môi trường", "environmental engineer"],             "Environmental Engineer"),
+    (["kỹ sư xây dựng", "civil engineer"],                       "Civil Engineer"),
+    (["kỹ sư năng lượng", "energy engineer"],                    "Energy Engineer"),
+    (["kỹ thuật viên", "technician"],                            "Technician"),
+    (["kỹ sư", "engineer"],                                      "Engineer"),
+
+    # ── Manufacturing / Production ────────────────────────────────────────────
+    (["quản lý sản xuất", "production manager"],                 "Production Manager"),
+    (["quản lý chất lượng", "quality manager"],                  "Quality Manager"),
+    (["chất lượng", "quality assurance", "quality control"],     "Quality Executive"),
+    (["an toàn lao động", "hse manager", "safety manager"],      "HSE Manager"),
+    (["an toàn", "safety", "hse"],                               "HSE Executive"),
+    (["bảo trì", "maintenance engineer"],                        "Maintenance Engineer"),
+    (["bảo trì", "maintenance"],                                 "Maintenance Executive"),
+    (["vận hành", "operator", "production operator"],            "Production Operator"),
+    (["sản xuất", "manufacturing"],                              "Manufacturing Executive"),
+
+    # ── Design (Graphic / Visual — non-digital) ──────────────────────────────
+    (["art director"],                                            "Art Director"),
+    (["graphic designer", "thiết kế đồ họa"],                   "Graphic Designer"),
+    (["thiết kế", "designer"],                                   "Designer"),
+
+    # ── F&B / Hospitality ────────────────────────────────────────────────────
+    (["bếp trưởng", "head chef", "executive chef"],              "Head Chef"),
+    (["đầu bếp", "chef"],                                        "Chef"),
+    (["nhà hàng", "restaurant manager"],                         "Restaurant Manager"),
+    (["f&b manager"],                                            "F&B Manager"),
+    (["f&b", "food and beverage"],                               "F&B Executive"),
+    (["khách sạn", "hotel manager"],                             "Hotel Manager"),
+    (["hospitality", "khách sạn", "hotel"],                      "Hospitality Executive"),
+    (["du lịch", "travel", "tour guide", "hướng dẫn viên"],     "Travel Executive"),
+    (["spa manager"],                                             "Spa Manager"),
+    (["spa", "thẩm mỹ", "làm đẹp", "beauty"],                  "Beauty Executive"),
+
+    # ── Retail ───────────────────────────────────────────────────────────────
+    (["quản lý cửa hàng", "store manager"],                      "Store Manager"),
+    (["nhân viên bán lẻ", "retail staff", "shop staff"],         "Retail Staff"),
+    (["thu ngân", "cashier"],                                    "Cashier"),
+
+    # ── General / Catch-all (từ chung nhất → cuối cùng) ─────────────────────
+    (["giám đốc", "director"],                                   "Director"),
+    (["quản lý", "manager"],                                     "Manager"),
+    (["trưởng nhóm", "team leader", "group leader"],             "Team Leader"),
+    (["chuyên viên cấp cao", "senior specialist", "senior executive"],
+                                                                  "Senior Executive"),
+    (["chuyên viên", "specialist", "executive officer"],         "Specialist"),
+    (["nhân viên", "staff", "officer"],                          "Staff"),
+]
 # ==============================================================================
 # 6. VIETNAMWORKS — ID → Text
 # ==============================================================================

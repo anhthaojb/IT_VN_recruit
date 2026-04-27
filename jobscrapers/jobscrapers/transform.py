@@ -16,28 +16,24 @@
 
 import re
 import argparse
+import unicodedata
 import numpy as np
 import pandas as pd
 import sqlalchemy
 from datetime import datetime, timedelta, date
-
 from lookups import (
-    # GEO
     PROVINCE_CANONICAL, GEO_KEYS_SORTED, REGION_MAP,
-    FOREIGN_KW,
-    # SALARY
-    CURRENCY_RULES, NEGOTIABLE_KW,
-    # EXPERIENCE
+    NEGOTIABLE_KW,
     NO_EXP_KW,
-    # JOB CLASSIFICATION
     LEVEL_MAP, EXP_TO_LEVEL,
     EDUCATION_MAP,
     INDUSTRY_TREE,
     COMPANY_TYPE_PATTERNS, COMPANY_TYPE_STRIP,
     JOB_CATEGORY_MAP, IT_TITLES,
     JOB_TITLE_MAP,
+    NON_IT_TITLE_MAP,           # <-- MỚI
     MAJOR_MAP,
-    CERT_KW, LANG_CERT_KW, LANG_CERT_TO_LANG,
+    CERT_KW, LANG_CERT_TO_LANG,
     SKILL_MAP,
     WORK_TYPE_MAP, WORK_MODE_MAP,
     ROLE_WORDS, TECH_DOMAIN, ROLE_DOMAIN_TO_TITLE,
@@ -46,15 +42,12 @@ from lookups import (
 # ==============================================================================
 # 0. CONFIG
 # ==============================================================================
-try:
-    from pipelines import DB_CONFIG as _DB
-    DATABASE_URL = (
-        f"mysql+mysqlconnector://{_DB['user']}:{_DB['password']}"
-        f"@{_DB['host']}/{_DB['database']}?charset=utf8mb4"
-    )
-except Exception:
-    DATABASE_URL = "mysql+mysqlconnector://root:123456@localhost/itta?charset=utf8mb4"
+import os
 
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "mysql+mysqlconnector://root:123456@localhost/itta?charset=utf8mb4"
+)
 SRC_TABLE   = "jobs"
 FACT_TABLE  = "fact_jobs_etl"
 LOG_TABLE   = "fact_etl_log"
@@ -80,6 +73,7 @@ CREATE TABLE IF NOT EXISTS {FACT_TABLE} (
     job_deadline_clean      DATE,
     job_title               TEXT,
     job_title_clean         VARCHAR(150),
+    job_title_detect  VARCHAR(150),
     job_category_clean      VARCHAR(100),
     is_it                   TINYINT(1),
     company_title           VARCHAR(255),
@@ -119,9 +113,9 @@ CREATE TABLE IF NOT EXISTS {FACT_TABLE} (
     company_size_min        INT,
     company_size_max        INT,
     company_industry        VARCHAR(255),
+    company_canonical_key   VARCHAR(200),
     industry_level1         VARCHAR(100),
-    industry_level2         VARCHAR(10),
-    industry_level3         VARCHAR(100),
+    industry_level2         VARCHAR(150),
     job_category            VARCHAR(255),
     number_recruit          VARCHAR(50),
     number_recruit_clean    SMALLINT UNSIGNED,
@@ -187,13 +181,17 @@ def _s(val) -> str:
     return str(val).strip()
 
 
-# ── 2.1 Website ───────────────────────────────────────────────────────────────
+# ==============================================================================
+# 2.1 Website
+# ==============================================================================
 
 def parse_website(raw: str) -> str:
     return _s(raw).lower()
 
 
-# ── 2.2 Dates ─────────────────────────────────────────────────────────────────
+# ==============================================================================
+# 2.2 Dates
+# ==============================================================================
 
 def _to_date(text: str, ref_iso: str) -> date | None:
     s = _s(text).lower()
@@ -276,58 +274,10 @@ def parse_dates(posted_raw: str, deadline_raw: str, scraped_at: str,
     return {"job_posted_at_clean": posted, "job_deadline_clean": deadline}
 
 
-# ── 2.3 Job title ─────────────────────────────────────────────────────────────
+# ==============================================================================
+# 2.3 Job title
+# ==============================================================================
 
-# FIX: Lấy danh sách tất cả hard-skill keywords từ SKILL_MAP để strip khỏi title
-def _build_skill_noise_pattern() -> re.Pattern:
-    """
-    Ghép tất cả keyword từ SKILL_MAP["hard"] thành một regex để strip
-    các cụm skill/tech ra khỏi job title.
-    """
-    all_kws = []
-    for kws in SKILL_MAP["hard"].values():
-        for kw in kws:
-            # Chỉ lấy keyword dài >= 2 ký tự, không phải regex phức tạp
-            if len(kw) >= 2 and not any(c in kw for c in r"\^$[]{}|?"):
-                all_kws.append(re.escape(kw))
-    # Sắp xếp dài → ngắn để match greedy
-    all_kws.sort(key=len, reverse=True)
-    pattern = r"(?i)\b(?:" + "|".join(all_kws) + r")\b"
-    return re.compile(pattern, re.IGNORECASE)
-
-# Noise patterns cần strip khỏi job title
-# Keywords NON-IT category để map từ job_category raw
-_NON_IT_CATEGORY_MAP: dict[str, list[str]] = {
-    "Finance":          ["kế toán", "tài chính", "accountant", "finance", "kiểm toán",
-                         "audit", "thuế", "tax", "ngân hàng", "banking", "chứng khoán"],
-    "HR":               ["nhân sự", "human resource", "hr", "tuyển dụng", "recruiter",
-                         "recruitment", "c&b", "hrbp", "training"],
-    "Admin":            ["hành chính", "administrative", "admin", "văn phòng", "office",
-                         "executive assistant", "thư ký", "secretary"],
-    "Marketing":        ["marketing", "truyền thông", "brand", "digital marketing",
-                         "seo", "content", "pr ", "public relation"],
-    "Sales":            ["kinh doanh", "sales", "bán hàng", "business development",
-                         "account manager", "account executive"],
-    "Customer Service": ["chăm sóc khách hàng", "customer service", "customer support",
-                         "helpdesk", "after sales", "dịch vụ khách hàng"],
-    "Logistics":        ["logistics", "chuỗi cung ứng", "supply chain", "kho vận",
-                         "xuất nhập khẩu", "import export", "vận tải", "warehouse"],
-    "Manufacturing":    ["sản xuất", "manufacturing", "kỹ thuật", "chất lượng",
-                         "quality", "qc", "qa ", "an toàn", "safety", "bảo trì",
-                         "maintenance", "vận hành", "operator"],
-    "Legal":            ["pháp lý", "luật", "legal", "compliance", "hợp đồng", "contract"],
-    "Education":        ["giáo dục", "giảng dạy", "giáo viên", "teacher", "training",
-                         "đào tạo", "education"],
-    "Healthcare":       ["y tế", "dược", "bác sĩ", "y tá", "healthcare", "pharma",
-                         "nurse", "doctor", "medical"],
-    "Construction":     ["xây dựng", "construction", "kiến trúc", "architecture",
-                         "bất động sản", "real estate", "cơ điện", "mep"],
-    "Design":           ["thiết kế", "design", "đồ họa", "graphic", "interior",
-                         "nội thất"],
-    "Other":            [],
-}
- 
-# IT keywords ngắn dùng để detect is_it khi không map được title
 _IT_EXTRA_KW: list[str] = [
     "phần mềm", "lập trình", "kỹ thuật phần mềm", "công nghệ thông tin",
     "hệ thống", "mạng máy tính", "an ninh mạng", "bảo mật",
@@ -338,7 +288,6 @@ _IT_EXTRA_KW: list[str] = [
     "looker", "bigquery",
 ]
  
-# Hard-coded IT title keywords (fallback khi JOB_TITLE_MAP không load được)
 _IT_TITLE_KW_FALLBACK: list[str] = [
     "software", "developer", "engineer", "programmer", "coder",
     "data", "ai ", "machine learning", "deep learning", "ml ",
@@ -350,6 +299,7 @@ _IT_TITLE_KW_FALLBACK: list[str] = [
     "product manager", "product owner", "technical",
     "blockchain", "iot", "embedded", "firmware",
 ]
+ 
 _TITLE_NOISE_PATTERNS = [
     r"\btuyển\s*(gấp|dụng)?\b",
     r"\bgấp\b",
@@ -371,217 +321,353 @@ _TITLE_NOISE_PATTERNS = [
     r"\bvới\s+mức\s+lương\b[^,;()\[\]]*",
     r"\bnhiều\s+ưu\s+đãi\b",
     r"\bưu\s+đãi\s+hấp\s+dẫn\b",
-    r"\[.*?\]",      # nội dung trong ngoặc vuông (địa điểm, skill...)
-    r"\(.*?\)",      # nội dung trong ngoặc tròn
+    r"\[.*?\]",
+    r"\(.*?\)",
 ]
-
-# FIX: build skill noise pattern một lần lúc import
-_SKILL_NOISE_RE: re.Pattern = _build_skill_noise_pattern()
-
-# Compile tất cả noise patterns
-_TITLE_NOISE_RES = [re.compile(p, re.IGNORECASE | re.UNICODE)
-                    for p in _TITLE_NOISE_PATTERNS]
-
-# FIX: danh sách hard skill keywords dùng để detect is_it
-_IT_HARD_SKILL_KW: frozenset[str] = frozenset(
-    kw.lower()
-    for kws in SKILL_MAP["hard"].values()
-    for kw in kws
-    if len(kw) >= 2 and not any(c in kw for c in r"\^$[]{}|?+*")
-)
+ 
 _TITLE_NOISE_RES = [re.compile(p, re.IGNORECASE | re.UNICODE)
                     for p in _TITLE_NOISE_PATTERNS]
  
  
-def _strip_title_noise(raw_title: str) -> str:
-    """Strip noise ra khỏi job title, GIỮ NGUYÊN role keywords."""
-    s = raw_title.strip()
+def _clean_job_title(raw: str) -> str:
+    """
+    Bước 1: Làm sạch raw title — xoá noise, giữ phần có nghĩa.
+    KHÔNG xoá tech keyword (vẫn cần cho detection ở bước 2).
+    """
+    s = _s(raw).strip()
+    if not s:
+        return ""
     for noise_re in _TITLE_NOISE_RES:
         s = noise_re.sub(" ", s)
+    # Xoá dấu câu thừa đầu / cuối
     s = re.sub(r"[-–—,;/|_]+$", "", s)
     s = re.sub(r"^[-–—,;/|_]+", "", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
-
-# def _strip_title_noise(raw_title: str) -> str:
-#     """
-#     Strip noise ra khỏi job title:
-#     1. Bỏ nội dung trong ngoặc/ngoặc vuông (thường là skill list)
-#     2. Bỏ skill keywords từ SKILL_MAP
-#     3. Bỏ các noise patterns (tuyển, địa điểm, lương, cấp bậc...)
-#     """
-#     s = raw_title.strip()
-
-#     # Bước 1: Bỏ nội dung trong ngoặc (skill list, địa điểm...)
-#     s = re.sub(r"\(.*?\)", " ", s)
-#     s = re.sub(r"\[.*?\]", " ", s)
-
-#     # Bước 2: Bỏ skill keywords từ SKILL_MAP
-#     s = _SKILL_NOISE_RE.sub(" ", s)
-
-#     # Bước 3: Bỏ các noise patterns
-#     for noise_re in _TITLE_NOISE_RES:
-#         s = noise_re.sub(" ", s)
-
-#     # Làm sạch
-#     s = re.sub(r"[-–—,;/|]+$", "", s)      # bỏ ký tự thừa cuối
-#     s = re.sub(r"^[-–—,;/|]+", "", s)      # bỏ ký tự thừa đầu
-#     s = re.sub(r"\s+", " ", s).strip()
-#     return s
-
-def _map_category_from_raw(job_category_raw: str) -> str | None:
+ 
+ 
+def _detect_job_title(clean_title: str) -> str | None:
     """
-    FIX C: Map job_category_clean từ job_category raw (scraped).
-    Trả về category string nếu match, None nếu không match.
+    Bước 2: Map cleaned title → standard English title.
+    Thứ tự ưu tiên:
+      1. JOB_TITLE_MAP     (IT standard)
+      2. Role+Domain infer (IT infer)
+      3. NON_IT_TITLE_MAP  (Non-IT standard)
     """
-    if not job_category_raw:
-        return None
-    text = _s(job_category_raw).lower()
-    if not text:
+    if not clean_title:
         return None
  
-    # Thử IT category qua JOB_CATEGORY_MAP trước
-    for std_title, category in JOB_CATEGORY_MAP.items():
-        if std_title.lower() in text or text in std_title.lower():
-            return category
+    text = clean_title.lower()
  
-    # Thử Non-IT category
-    for category, kws in _NON_IT_CATEGORY_MAP.items():
-        if kws and any(kw in text for kw in kws):
-            return category
+    # Pass 1 — JOB_TITLE_MAP exact keyword match
+    for std_title, kws in JOB_TITLE_MAP.items():
+        if any(k in text for k in kws):
+            return std_title
+ 
+    # Pass 2 — Role + Domain inference
+    role   = next((v for k, v in ROLE_WORDS.items()  if k in text), None)
+    domain = next((v for k, v in TECH_DOMAIN.items() if k in text), None)
+    if role:
+        inferred = ROLE_DOMAIN_TO_TITLE.get(
+            (role, domain),
+            ROLE_DOMAIN_TO_TITLE.get((role, None)),
+        )
+        if inferred:
+            return inferred
+ 
+    # Pass 3 — NON_IT_TITLE_MAP
+    for kws, en_title in NON_IT_TITLE_MAP:
+        if any(k in text for k in kws):
+            return en_title
  
     return None
  
+ 
+def _has_it_signal(text: str) -> bool:
+    """Kiểm tra xem title có chứa IT keyword hay không (dùng khi detect = None)."""
+    return (
+        any(k in text for k in TECH_DOMAIN)
+        or any(k in text for k in _IT_TITLE_KW_FALLBACK)
+        or any(k in text for k in _IT_EXTRA_KW)
+    )
+ 
+ 
 def parse_job_title(raw: str, job_category_raw: str = "") -> dict:
     """
-    FIX C + feedback:
-    1. job_category_clean: ưu tiên job_category_raw → fallback job_title
-    2. is_it: dùng JOB_TITLE_MAP keywords + TECH_DOMAIN (không chỉ IT_TITLES)
-    3. job_title_clean: không bỏ role keyword (manager, engineer...)
-    4. Non-IT category đúng thay vì default "software engineer"
+    Trả về 4 trường:
+ 
+    job_title_clean   — raw title đã strip noise (giữ tech keyword)
+    job_title_detect  — standard English title từ lookup (None nếu không map được)
+    job_category_clean— IT category / "IT - Khác" / "Non-IT"
+    is_it             — 1 / 0
+ 
+    Phân loại theo thứ tự:
+      A. detected ∈ IT_TITLES              → is_it=1, category = JOB_CATEGORY_MAP[detected]
+      B. detected ∈ JOB_CATEGORY_MAP       → is_it=0, category = JOB_CATEGORY_MAP[detected]
+         (ví dụ: Designer → "Designing", không phải IT)
+      C. detected = None + có IT signal    → is_it=1, category = "IT - Khác"
+      D. detected = None + không IT signal → is_it=0, category = "Non-IT"
     """
-    result_base = {"job_title_clean": None, "job_category_clean": None, "is_it": 0}
+    raw_s   = _s(raw)
+    cleaned = _clean_job_title(raw_s)
  
-    if not raw:
-        # Vẫn thử map category từ raw dù không có title
-        cat = _map_category_from_raw(job_category_raw)
-        result_base["job_category_clean"] = cat or "Other"
-        return result_base
+    # Detection chạy trên cleaned; fallback sang raw nếu cleaned rỗng
+    detected = _detect_job_title(cleaned) or _detect_job_title(raw_s)
  
-    raw_s = _s(raw)
-    text  = raw_s.lower()
-    stripped = _strip_title_noise(raw_s).lower()
- 
-    title_clean  = None
-    matched_dict = False
- 
-    # ── Pass 1: exact keyword match trong JOB_TITLE_MAP (stripped title) ─────
-    for std, kws in JOB_TITLE_MAP.items():
-        if any(k in stripped for k in kws):
-            title_clean  = std
-            matched_dict = True
-            break
- 
-    # ── Pass 2: thử lại với raw text ─────────────────────────────────────────
-    if title_clean is None:
-        for std, kws in JOB_TITLE_MAP.items():
-            if any(k in text for k in kws):
-                title_clean  = std
-                matched_dict = True
-                break
- 
-    # ── Pass 3: infer từ role word + tech domain ──────────────────────────────
-    if title_clean is None:
-        role   = next((v for k, v in ROLE_WORDS.items() if k in stripped), None)
-        domain = next((v for k, v in TECH_DOMAIN.items() if k in stripped), None)
-        if role:
-            title_clean = ROLE_DOMAIN_TO_TITLE.get(
-                (role, domain),
-                ROLE_DOMAIN_TO_TITLE.get((role, None))
-            )
-            if title_clean:
-                matched_dict = True
- 
-    # Nếu vẫn không map được → dùng stripped title (giữ role keyword)
-    if title_clean is None:
-        clean_raw = re.sub(r"^\W+|\W+$", "", stripped).strip()
-        clean_raw = re.sub(r"\s+", " ", clean_raw)
-        title_clean = clean_raw if clean_raw else raw_s
- 
-    # ── FIX: is_it dùng JOB_TITLE_MAP keywords (không chỉ IT_TITLES) ─────────
-    is_it = 0
-    if matched_dict:
-        # Nếu map được → check IT_TITLES
-        if title_clean in IT_TITLES:
-            is_it = 1
+    # ── Phân loại ────────────────────────────────────────────────────────────
+    if detected is not None:
+        if detected in IT_TITLES:
+            # Case A — IT có trong lookup
+            return {
+                "job_title_clean":    cleaned or raw_s,
+                "job_title_detect":   detected,
+                "job_category_clean": JOB_CATEGORY_MAP.get(detected, "IT - Khác"),
+                "is_it":              1,
+            }
+        elif detected in JOB_CATEGORY_MAP:
+            # Case B — có trong JOB_TITLE_MAP nhưng không phải IT (Designer…)
+            return {
+                "job_title_clean":    cleaned or raw_s,
+                "job_title_detect":   detected,
+                "job_category_clean": JOB_CATEGORY_MAP[detected],
+                "is_it":              0,
+            }
         else:
-            # Cũng check bằng keyword scan (bắt case như "AI Scientist", "Solutions Architect")
-            for std, kws in JOB_TITLE_MAP.items():
-                if std in IT_TITLES and any(k in text for k in kws):
-                    is_it = 1
-                    break
-    if not is_it:
-        # Scan TECH_DOMAIN
-        if any(k in text for k in TECH_DOMAIN):
-            is_it = 1
-    if not is_it:
-        # Fallback: scan hard-coded IT title keywords
-        for kw in _IT_TITLE_KW_FALLBACK:
-            if kw in text:
-                is_it = 1
-                break
-    if not is_it:
-        # Scan extra IT keywords
-        for kw in _IT_EXTRA_KW:
-            if kw in text:
-                is_it = 1
-                break
+            # detected đến từ NON_IT_TITLE_MAP → Non-IT
+            return {
+                "job_title_clean":    cleaned or raw_s,
+                "job_title_detect":   detected,
+                "job_category_clean": "Non-IT",
+                "is_it":              0,
+            }
  
-    # ── FIX C: job_category_clean – ưu tiên job_category raw ─────────────────
-    # Bước 1: thử map từ job_category raw (scraped)
-    category = _map_category_from_raw(job_category_raw)
+    # ── Không map được — dùng IT signal để phân biệt ────────────────────────
+    text = (cleaned or raw_s).lower()
+    if _has_it_signal(text):
+        # Case C — IT nhưng không có mapping chuẩn
+        return {
+            "job_title_clean":    cleaned or raw_s,
+            "job_title_detect":   None,
+            "job_category_clean": "IT - Khác",
+            "is_it":              1,
+        }
  
-    # Bước 2: nếu không map được từ raw → dùng title
-    if category is None:
-        if matched_dict and title_clean in JOB_CATEGORY_MAP:
-            category = JOB_CATEGORY_MAP[title_clean]
-        elif is_it:
-            category = "Other"  # IT nhưng chưa map được category cụ thể
-        else:
-            # Thử Non-IT category từ title
-            for cat_name, kws in _NON_IT_CATEGORY_MAP.items():
-                if kws and any(kw in text for kw in kws):
-                    category = cat_name
-                    break
- 
-    # Bước 3: fallback cuối
-    if category is None:
-        category = "Other" if is_it else "Non-IT"
- 
+    # Case D — thuần Non-IT, không map được
     return {
-        "job_title_clean":     title_clean,
-        "job_category_clean":  category,
-        "is_it":               is_it,
+        "job_title_clean":    cleaned or raw_s,
+        "job_title_detect":   None,
+        "job_category_clean": "Non-IT",
+        "is_it":              0,
     }
  
+ 
 
+# ==============================================================================
+# 2.4 Company title
+# ==============================================================================
 
-# ── 2.4 Company title ─────────────────────────────────────────────────────────
-
-_COMPANY_NOISE = re.compile(
-    r"\b(company|công ty|co\.?,?\s*ltd\.?|co\s+ltd|corp\.?|corporation"
-    r"|trách nhiệm hữu hạn|tnhh|cổ phần|\bcp\b|hợp danh|\bhd\b"
-    r"|doanh nghiệp tư nhân|dntn|tập đoàn"
-    r"|\bllc\b|\binc\.?\b|\bincorporated\b|\bjsc\b|\bltd\.?\b|\blimited\b)\b",
+# Hậu tố pháp lý / ngành / địa danh cần strip (dài → ngắn)
+_LEGAL_STRIP_RE = re.compile(
+    r'\b('
+    r'tổng\s+công\s+ty'
+    r'|trách\s+nhiệm\s+hữu\s+hạn\s+một\s+thành\s+viên'
+    r'|trách\s+nhiệm\s+hữu\s+hạn\s+mtv'
+    r'|trách\s+nhiệm\s+hữu\s+hạn'
+    r'|một\s+thành\s+viên'
+    r'|ngân\s+hàng\s+thương\s+mại\s+cổ\s+phần'
+    r'|ngân\s+hàng\s+tmcp'
+    r'|ngân\s+hàng'
+    r'|hợp\s+tác\s+xã'
+    r'|cổ\s+phần|tập\s+đoàn|chi\s+nhánh'
+    r'|văn\s+phòng\s+đại\s+diện'
+    r'|\bctcp\b'
+    r'|\btnhh\s+mtv\b|\btnhh\s+1tv\b|\btnhh\b'
+    r'|\bjoint[\s\-]stock\s+company\b|\bjoint[\s\-]stock\b'
+    r'|\bjsc\b|\bllc\b|\bltd\.?\b|\binc\.?\b'
+    r'|\bcorp\.?\b|\bcorporation\b|\bco\.?\s*,?\s*ltd\.?\b'
+    r'|\bpte\.?\s*ltd\.?\b|\bplc\b|\bgmbh\b|\bag\b'
+    r'|\bgroup\b|\bholdings?\b|\bventures?\b'
+    r'|\bservices?\b|\btrading\b|\bsolutions?\b'
+    r'|\bsystems?\b|\btechnolog(?:y|ies)\b'
+    r'|\binternational\b|\bglobal\b'
+    r'|\bviệt\s*nam\b|\bvietnam\b|\bviet\s*nam\b'
+    r'|\(việt\s*nam\)|\(vietnam\)'
+    r'|\bcn\b'
+    r')\b',
     re.IGNORECASE | re.UNICODE,
 )
+
+_DASH_NOISE_RE = re.compile(
+    r'\s*(?:[-–—|])\s*(?=\S{20,}|\w[\w\s]{15,})',
+    re.UNICODE,
+)
+_PAREN_NOISE_RE = re.compile(r'\([^)]{0,40}\)', re.UNICODE)
+
+_COMPANY_NOISE = re.compile(
+    r'\b(công\s+ty|tổng\s+công\s+ty|company|co\.?,?\s*ltd\.?|co\s+ltd'
+    r'|corp\.?|corporation'
+    r'|trách\s+nhiệm\s+hữu\s+hạn|tnhh|cổ\s+phần|\bcp\b|hợp\s+tác\s+xã'
+    r'|hợp\s+danh|\bhd\b'
+    r'|doanh\s+nghiệp\s+tư\s+nhân|dntn|tập\s+đoàn|\bctcp\b'
+    r'|\bllc\b|\binc\.?\b|\bincorporated\b|\bjsc\b|\bltd\.?\b|\blimited\b)\b',
+    re.IGNORECASE | re.UNICODE,
+)
+_VN_SUFFIX_RE = re.compile(
+    r'[-–\s]*\b(?:việt\s*nam|vietnam|viet\s*nam)\b[-–\s]*',
+    re.IGNORECASE | re.UNICODE,
+)
+_CONFIDENTIAL_RE = re.compile(
+    r"(?:careerlink|vietnamworks|topcv|itviec|linkedin|jobstreet|timviecnhanh)"
+    r"['\s]*(?:client|'s\s+client)|confidential\s+(?:company|employer)"
+    r"|employer\s+brand|ẩn\s+danh",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_SYNONYM_MAP = [
+    (re.compile(r'\bphan\s+mem\b',       re.I), 'software'),
+    (re.compile(r'\bcong\s+nghe\b',      re.I), 'technology'),
+    (re.compile(r'\bgiai\s+phap\b',      re.I), 'solutions'),
+    (re.compile(r'\bhe\s+thong\b',       re.I), 'systems'),
+    (re.compile(r'\bphat\s+trien\b',     re.I), 'development'),
+    (re.compile(r'\bung\s+dung\b',       re.I), 'application'),
+    (re.compile(r'\bthuong\s+mai\b',     re.I), 'trading'),
+    (re.compile(r'\bdich\s+vu\b',        re.I), 'services'),
+    (re.compile(r'\bsan\s+xuat\b',       re.I), 'manufacturing'),
+    (re.compile(r'\bxay\s+dung\b',       re.I), 'construction'),
+    (re.compile(r'\bdau\s+tu\b',         re.I), 'investment'),
+    (re.compile(r'\bquang\s+cao\b',      re.I), 'advertising'),
+    (re.compile(r'\bvan\s+chuyen\b',     re.I), 'logistics'),
+    (re.compile(r'\bvan\s+tai\b',        re.I), 'logistics'),
+    (re.compile(r'\bngan\s+hang\b',      re.I), 'bank'),
+    (re.compile(r'\bbao\s+hiem\b',       re.I), 'insurance'),
+    (re.compile(r'\bchung\s+khoan\b',    re.I), 'securities'),
+    (re.compile(r'\bdia\s+oc\b',         re.I), 'realestate'),
+    (re.compile(r'\bbat\s+dong\s+san\b', re.I), 'realestate'),
+    (re.compile(r'\btuyen\s+dung\b',     re.I), 'recruitment'),
+    (re.compile(r'\bgiao\s+duc\b',       re.I), 'education'),
+    (re.compile(r'\by\s+te\b',           re.I), 'healthcare'),
+    (re.compile(r'\bduoc\b',             re.I), 'pharma'),
+    (re.compile(r'\bthuc\s+pham\b',      re.I), 'food'),
+    (re.compile(r'\bnha\s+hang\b',       re.I), 'restaurant'),
+    (re.compile(r'\bkhach\s+san\b',      re.I), 'hotel'),
+    (re.compile(r'\bdu\s+lich\b',        re.I), 'travel'),
+    (re.compile(r'\bmoi\s+truong\b',     re.I), 'environment'),
+    (re.compile(r'\bnang\s+luong\b',     re.I), 'energy'),
+    (re.compile(r'\bdai\s+hoc\b',        re.I), 'university'),
+    (re.compile(r'\bhoc\s+vien\b',       re.I), 'academy'),
+    (re.compile(r'\btrung\s+tam\b',      re.I), 'center'),
+    (re.compile(r'\bbenh\s+vien\b',      re.I), 'hospital'),
+    (re.compile(r'\bso\s+giao\s+duc\b',  re.I), 'education_dept'),
+]
+_ABBREV_WHITELIST = {
+    'ghn': 'giao hang nhanh',
+    'ghtk': 'giao hang tiet kiem',
+    'jt': 'j&t express',
+    'ems': 'chuyen phat nhanh buu dien',
+    'vcb': 'vietcombank',
+    'tcb': 'techcombank',
+    'acb': 'a chau bank',
+    'bidv': 'dau tu va phat trien viet nam bank',
+    'vib': 'quoc te bank',
+    'msb': 'hang hai bank',
+    'vpbank': 'viet nam thinh vuong bank',
+    'mb': 'quan doi bank',
+    'mbb': 'quan doi bank',
+    'stb': 'sai gon thuong tin bank',
+    'sacombank': 'sai gon thuong tin bank',
+    'tpbank': 'tien phong bank',
+    'lpb': 'loc phat viet nam bank',
+    'lpbank': 'loc phat viet nam bank',
+    'pvcombank': 'dai chung viet nam bank',
+    'vbsp': 'chinh sach xa hoi bank',
+    'agribank': 'nong nghiep va phat trien nong thon bank',
+    'hdb': 'phat trien thanh pho ho chi minh bank',
+    'hdbank': 'phat trien thanh pho ho chi minh bank',
+    'shb': 'sai gon ha noi bank',
+    'ocb': 'phuong dong bank',
+    'vbb': 'viet nam thuong tin bank',
+    'vietbank': 'viet nam thuong tin bank',
+    'abb': 'an binh bank',
+    'abbank': 'an binh bank',
+    'bab': 'bac a bank',
+    'vpb': 'viet nam thinh vuong bank',
+    'vnpt': 'buu chinh vien thong viet nam',
+    'viettel': 'vien thong quan doi viettel',
+    'momo': 'truyen thong truc tuyen momo',
+    'vng': 'cong nghe vng',
+    'fpt': 'fpt technology',
+    'cmc': 'cong nghe cmc',
+    'hcl': 'hcl technologies',
+    'tma': 'tma solutions',
+    'vti': 'vti cloud technology',
+    'kms': 'kms technology',
+    'vnm': 'vinamilk',
+    'mwg': 'the gioi di dong',
+    'pnj': 'vàng bac da quy phu nhuan',
+    'vic': 'vingroup',
+    'vhm': 'vinhomes',
+    'vre': 'vincom retail',
+    'msn': 'masan group',
+    'hpg': 'hoa phat group',
+    'fss': 'financial software solutions',
+    'ssi': 'chung khoan ssi',
+    'vps': 'chung khoan vps',
+    'pvi': 'bao hiem dau khi',
+    'bv': 'bao viet',
+    'bhv': 'bao viet',
+    'prudential': 'bao hiem prudential',
+    'manulife': 'bao hiem manulife',
+}
+
+
+def _remove_vn_accents(text: str) -> str:
+    text = text.replace('Đ', 'D').replace('đ', 'd')
+    return ''.join(
+        c for c in unicodedata.normalize('NFKD', text)
+        if not unicodedata.combining(c)
+    )
+
+
+def _apply_synonyms(text: str) -> str:
+    for pattern, replacement in _SYNONYM_MAP:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _build_canonical_key(raw_clean: str) -> str:
+    s = (raw_clean or '').strip()
+    if not s:
+        return ''
+    s = _DASH_NOISE_RE.split(s)[0]
+    s = _PAREN_NOISE_RE.sub(' ', s)
+    for _ in range(3):
+        prev = s
+        s = _LEGAL_STRIP_RE.sub(' ', s)
+        if s == prev:
+            break
+    s = _remove_vn_accents(s)
+    s = re.sub(r'[^a-z0-9\s]', ' ', s.lower())
+    s = re.sub(r'\s+', ' ', s).strip()
+    s = _ABBREV_WHITELIST.get(s, s)
+    s = _apply_synonyms(s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
 
 
 def parse_company_title(raw: str) -> dict:
     if not raw:
-        return {"company_title_clean": None, "company_type": None}
-    s  = _s(raw)
+        return {'company_title_clean': None, 'company_type': None,
+                'company_canonical_key': None}
+
+    s  = str(raw).strip()
     sl = s.lower()
+
+    if _CONFIDENTIAL_RE.search(sl):
+        return {
+            'company_title_clean':   'Confidential',
+            'company_type':          'Confidential',
+            'company_canonical_key': 'confidential',
+        }
 
     company_type = None
     for pattern, ctype in COMPANY_TYPE_PATTERNS:
@@ -589,13 +675,31 @@ def parse_company_title(raw: str) -> dict:
             company_type = ctype
             break
 
-    cleaned = _COMPANY_NOISE.sub("", s)
-    cleaned = re.sub(r"[,.\-–—]+$", "", cleaned).strip()
-    cleaned = re.sub(r"\s+", " ", cleaned).strip() or None
-    return {"company_title_clean": cleaned, "company_type": company_type or "Khác"}
+    cleaned = _DASH_NOISE_RE.split(s)[0].strip()
+    cleaned = _PAREN_NOISE_RE.sub(' ', cleaned)
+    cleaned = _COMPANY_NOISE.sub('', cleaned)
+
+    cleaned_stripped_vn = _VN_SUFFIX_RE.sub(' ', cleaned).strip()
+    if len(cleaned_stripped_vn.strip()) >= 3:
+        cleaned = cleaned_stripped_vn
+
+    cleaned = re.sub(r'[,.\-–—]+$', '', cleaned).strip()
+    cleaned = re.sub(r'^[,.\-–—]+', '', cleaned).strip()
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned).strip()
+    cleaned = cleaned.upper() if cleaned else None
+
+    canonical = _build_canonical_key(cleaned or s)
+
+    return {
+        'company_title_clean':   cleaned,
+        'company_type':          company_type or 'Khác',
+        'company_canonical_key': canonical or None,
+    }
 
 
-# ── 2.5 Location ──────────────────────────────────────────────────────────────
+# ==============================================================================
+# 2.5 Location
+# ==============================================================================
 
 def _resolve_province(raw: str) -> tuple[str | None, str]:
     loc      = raw.lower().strip()
@@ -610,6 +714,11 @@ def _resolve_province(raw: str) -> tuple[str | None, str]:
 
 
 def parse_location(raw: str) -> list[dict]:
+    """
+    Whitelist-based: chỉ những địa điểm map được vào PROVINCE_CANONICAL
+    mới là is_vn=1. Không nhận ra → is_vn=0, không dùng FOREIGN_KW
+    để tránh false positive (vd: "Thanh Hóa" bị match "anh").
+    """
     if not raw:
         return [{"location_province": "Khác", "location_region": "Khác", "is_vn": 0}]
 
@@ -629,8 +738,6 @@ def parse_location(raw: str) -> list[dict]:
     seen_provinces = set()
 
     for part in parts:
-        pl         = part.lower().strip()
-        is_foreign = any(fw in pl for fw in FOREIGN_KW)
         province, region = _resolve_province(part)
 
         if province and province in seen_provinces:
@@ -638,16 +745,27 @@ def parse_location(raw: str) -> list[dict]:
         if province:
             seen_provinces.add(province)
 
-        result.append({
-            "location_province": province or ("Nước ngoài" if is_foreign else "Khác"),
-            "location_region":   "Nước ngoài" if is_foreign else region,
-            "is_vn":             0 if is_foreign else (1 if province else 0),
-        })
+        if province:
+            # Map được → chắc chắn Việt Nam
+            result.append({
+                "location_province": province,
+                "location_region":   region,
+                "is_vn":             1,
+            })
+        else:
+            # Không map được → không xác định (nước ngoài hoặc địa chỉ lạ)
+            result.append({
+                "location_province": "Khác",
+                "location_region":   "Khác",
+                "is_vn":             0,
+            })
 
     return result or [{"location_province": "Khác", "location_region": "Khác", "is_vn": 0}]
 
 
-# ── 2.6 Work style ────────────────────────────────────────────────────────────
+# ==============================================================================
+# 2.6 Work style
+# ==============================================================================
 
 def parse_work_style(job_type_raw: str, work_mode_raw: str, job_desc: str) -> dict:
     full = (_s(job_type_raw) + " " + _s(work_mode_raw) + " " +
@@ -668,30 +786,10 @@ def parse_work_style(job_type_raw: str, work_mode_raw: str, job_desc: str) -> di
     return {"job_type_clean": jt, "work_mode_clean": wm}
 
 
-# ── 2.7 Compensation ──────────────────────────────────────────────────────────
-
 # ==============================================================================
-# PATCH: parse_compensation – rewrite hoàn toàn theo feedback
-# Thay thế toàn bộ phần "── 2.7 Compensation" trong etl.py
+# 2.7 Compensation
 # ==============================================================================
 
-# ==============================================================================
-# 2.7  Compensation  (REWRITE)
-# ==============================================================================
-
-# ── Đơn vị output chuẩn ──────────────────────────────────────────────────────
-# • salary_min / salary_max : đơn vị NGUYÊN GỐC theo currency
-#       USD  → USD
-#       VND  → VND  (đồng, KHÔNG chia nghìn)
-#       JPY  → JPY
-# • conversion_rate : 1 đơn vị currency = conversion_rate VND
-#       USD: 25_500 (cập nhật theo tỷ giá thực tế)
-#       VND: 1
-#       JPY: 168
-# • period : "month" | "year"  (sau khi normalize, salary đã ÷12 nếu year)
-# • is_negotiable : 1 nếu không tìm được số hợp lệ
-
-# ── Currency table (code, vnd_rate) ──────────────────────────────────────────
 _CURRENCY_TABLE: dict[str, float] = {
     "USD": 25_500.0,
     "VND": 1.0,
@@ -706,123 +804,78 @@ _CURRENCY_TABLE: dict[str, float] = {
     "THB": 700.0,
 }
 
-# ── Patterns detect currency ──────────────────────────────────────────────────
 _CURRENCY_DETECT: list[tuple[str, str]] = [
-    # USD
-    (r"\$|usd|\bđô\b|dollar", "USD"),
-    # VND
+    (r"\$|usd|\bđô\b|dollar",                "USD"),
     (r"vnđ|vnd|đ(?!ồng)|đồng|triệu|triêu|nghìn\s*đ|ngàn\s*đ", "VND"),
-    # JPY
-    (r"\bjpy\b|¥|yen", "JPY"),
-    # EUR
-    (r"\beur\b|€|euro", "EUR"),
-    # SGD
-    (r"\bsgd\b|s\$", "SGD"),
-    # GBP
-    (r"\bgbp\b|£|pound", "GBP"),
-    # AUD
-    (r"\baud\b|a\$", "AUD"),
-    # CAD
-    (r"\bcad\b|ca\$", "CAD"),
-    # KRW
-    (r"\bkrw\b|₩|won", "KRW"),
-    # CNY
-    (r"\bcny\b|rmb|yuan", "CNY"),
-    # THB
-    (r"\bthb\b|฿|baht", "THB"),
+    (r"\bjpy\b|¥|yen",                        "JPY"),
+    (r"\beur\b|€|euro",                       "EUR"),
+    (r"\bsgd\b|s\$",                          "SGD"),
+    (r"\bgbp\b|£|pound",                      "GBP"),
+    (r"\baud\b|a\$",                          "AUD"),
+    (r"\bcad\b|ca\$",                         "CAD"),
+    (r"\bkrw\b|₩|won",                        "KRW"),
+    (r"\bcny\b|rmb|yuan",                     "CNY"),
+    (r"\bthb\b|฿|baht",                       "THB"),
 ]
 
-# ── Negotiable keywords (chỉ trigger khi KHÔNG có số thực sự) ────────────────
 _NEG_KW: list[str] = [
     "thỏa thuận", "thương lượng", "competitive", "negotiable",
     "attractive", "market rate", "commensurate", "tbd", "t.b.d",
     "to be discussed", "to be confirmed", "sẽ thảo luận",
 ]
 
-# ── Multiplier suffix ────────────────────────────────────────────────────────
-# Xử lý sau khi extract từng token số
-#   "3.5k"      → 3500
-#   "3.5m/3.5M" → 3_500_000  (dùng khi currency là USD; triệu đồng khi VND)
-#   "30M"       → 30_000_000
-#   "triệu"     → ×1_000_000
-#   "tr"        → ×1_000_000
-#   "k"         → ×1000
 _SUFFIX_RE = re.compile(
     r"(?P<num>\d+(?:[.,]\d+)?)\s*"
     r"(?P<sfx>triệu|triêu\b|tr\b|[kKmM](?!\w))",
     re.UNICODE,
 )
 
-# Pattern để detect "X - Y triệu" (suffix ở cuối áp dụng cho CẢ HAI số)
 _RANGE_SUFFIX_RE = re.compile(
     r"(?P<n1>\d+(?:[.,]\d+)?)\s*[-–—~]\s*(?P<n2>\d+(?:[.,]\d+)?)\s*"
     r"(?P<sfx>triệu|triêu\b|tr\b|[kKmMđ](?!\w))",
     re.UNICODE,
 )
 
-# ── Period detection ─────────────────────────────────────────────────────────
 _YEAR_RE  = re.compile(r"/\s*year|per\s+year|/\s*yr|/\s*năm|/\s*annum", re.I)
 _MONTH_RE = re.compile(r"/\s*month|per\s+month|/\s*tháng|/\s*mo\b", re.I)
 
 
 def _detect_currency(text: str) -> str:
-    """Trả về mã tiền tệ (vd: 'USD', 'VND'). Mặc định 'VND'."""
     for pattern, code in _CURRENCY_DETECT:
         if re.search(pattern, text, re.I):
             return code
-    # Nếu có suffix k/K/m/M mà không có dấu hiệu VND → giả định USD
-    if re.search(r"\d\s*[kK]\b", text) and not re.search(r"triệu|triêu|đồng|vnđ|vnd|\bđ\b", text, re.I):
+    if re.search(r"\d\s*[kK]\b", text) and not re.search(
+            r"triệu|triêu|đồng|vnđ|vnd|\bđ\b", text, re.I):
         return "USD"
     return "VND"
 
 
 def _normalize_separators(text: str) -> str:
-    """
-    Chuẩn hoá dấu phân cách:
-      • "1,200,000"  (US thousand)  → "1200000"
-      • "1.200.000"  (VN/EU thousand) → "1200000"
-      • "1.5"        (decimal)       → "1.5"   ← GIỮ NGUYÊN
-    Quy tắc: áp dụng nhiều lần để bắt chuỗi x.xxx.xxx và x,xxx,xxx.
-    """
-    # Bỏ thousand-sep dạng "." (áp dụng nhiều lần cho x.xxx.xxx.xxx)
     while re.search(r"\d\.\d{3}(?!\d)", text):
         text = re.sub(r"(\d)\.(\d{3})(?!\d)", r"\1\2", text)
-    # Bỏ thousand-sep dạng ","
     while re.search(r"\d,\d{3}(?!\d)", text):
         text = re.sub(r"(\d),(\d{3})(?!\d)", r"\1\2", text)
-    # Thay dấu "," còn lại → "." (decimal)
     text = text.replace(",", ".")
     return text
 
 
 def _apply_suffix(num_str: str, sfx: str, currency: str) -> float:
-    """Áp dụng hệ số suffix vào giá trị số."""
     val = float(num_str.replace(",", "."))
     sfx_lower = sfx.lower()
     if sfx_lower in ("triệu", "triêu", "tr", "m"):
-        # "m" trong ngữ cảnh USD (1m = 1_000_000); cũng là triệu VND
         return val * 1_000_000
     if sfx_lower == "k":
         return val * 1_000
-    # uppercase M đã được xử lý ở trên
     return val
 
 
 def _extract_salary_numbers(text: str, currency: str) -> list[float]:
-    """
-    Trích xuất danh sách giá trị tiền lương từ chuỗi văn bản.
-    Ưu tiên pattern có suffix trước, fallback sang số thường.
-
-    Trả về list đã sorted (không áp dụng period).
-    """
-    # Chuẩn hoá dấu ~, –, — thành -
     t = text.replace("~", "-").replace("–", "-").replace("—", "-")
     t = _normalize_separators(t)
 
     results: list[float] = []
     consumed_spans: list[tuple[int, int]] = []
 
-    # Pass 0: "X - Y triệu/k/M" → áp suffix cho cả 2 số
     for m in _RANGE_SUFFIX_RE.finditer(t):
         sfx = m.group("sfx")
         for key in ("n1", "n2"):
@@ -830,7 +883,6 @@ def _extract_salary_numbers(text: str, currency: str) -> list[float]:
             results.append(val)
         consumed_spans.append(m.span())
 
-    # Pass 1: suffix patterns đơn lẻ (greedy, dài trước ngắn)
     for m in _SUFFIX_RE.finditer(t):
         s_pos, e_pos = m.span()
         if any(cs <= s_pos < ce for cs, ce in consumed_spans):
@@ -839,35 +891,23 @@ def _extract_salary_numbers(text: str, currency: str) -> list[float]:
         results.append(val)
         consumed_spans.append((s_pos, e_pos))
 
-    # Pass 2: số thường (plain) – bỏ những vị trí đã consumed
     for m in re.finditer(r"\d+(?:\.\d+)?", t):
-        # Kiểm tra không overlap với suffix match
         s, e = m.span()
         if any(cs <= s < ce for cs, ce in consumed_spans):
             continue
         val = float(m.group())
-        # Lọc số hợp lệ theo currency
-        if currency == "VND":
-            # Số nhỏ hơn 1000 trong ngữ cảnh VND (không có suffix) thường là rác
-            # Ngoại lệ: 100–999 có thể là lương tháng theo đơn vị nghìn đồng → giữ
-            if val < 100:
-                continue
+        if currency == "VND" and val < 100:
+            continue
         results.append(val)
 
     return sorted(results)
 
 
 def _has_real_number(text: str) -> bool:
-    """Kiểm tra text có chứa ít nhất một số tiền hợp lệ (> 0)."""
     return bool(re.search(r"\d", text))
 
 
 def _split_main_bonus(text: str) -> str:
-    """
-    Tách phần lương chính khỏi bonus/benefit text.
-    Ví dụ: "up to 30M. OKR/KPI bonus..." → "up to 30M"
-    """
-    # Cắt tại dấu chấm câu hoặc newline đầu tiên SAU khi đã có số
     m = re.search(
         r"(.*?\d.*?)(?:\.\s+[A-ZÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂĐ]|\n|;|,\s+(?:including|plus|with|and\s+(?:bonus|benefits?)))",
         text, re.I | re.DOTALL,
@@ -875,26 +915,7 @@ def _split_main_bonus(text: str) -> str:
     return m.group(1) if m else text
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
-
 def parse_compensation(raw: str) -> dict:
-    """
-    Parse chuỗi lương → dict với các key:
-        salary_min       : int | None  (đơn vị gốc theo currency)
-        salary_max       : int | None
-        salary_currency  : str | None
-        conversion_rate  : float | None  (1 đơn vị = N VND)
-        is_negotiable    : int  (0 hoặc 1)
-
-    Cải tiến so với phiên bản cũ:
-        1. Fix min/max (không bị overwrite thành max)
-        2. Fix VND scale (giữ nguyên đơn vị gốc; conversion_rate = 1)
-        3. Fix currency detect ($, k, suffix M)
-        4. Handle /year → chia 12
-        5. Negotiable chỉ khi KHÔNG có số
-        6. Tách bonus text trước khi parse
-        7. Fix JPY scale
-    """
     _base = {
         "salary_min":      None,
         "salary_max":      None,
@@ -907,42 +928,32 @@ def parse_compensation(raw: str) -> dict:
     if not s:
         return _base
 
-    text = s.lower()
-
-    # ── FIX 9: Tách main salary khỏi bonus text trước mọi thứ ───────────────
-    s_main = _split_main_bonus(s)
+    text      = s.lower()
+    s_main    = _split_main_bonus(s)
     text_main = s_main.lower()
 
-    # ── FIX 5: Negotiable CHỈ khi không có số ────────────────────────────────
     if any(kw in text for kw in _NEG_KW) and not _has_real_number(text_main):
         return _base
     if any(kw in text for kw in NEGOTIABLE_KW) and not _has_real_number(text_main):
         return _base
 
-    # ── FIX 3: Detect currency từ toàn bộ text (bao gồm suffix M, $...) ─────
     currency = _detect_currency(text)
     rate     = _CURRENCY_TABLE.get(currency, 1.0)
-
-    # ── FIX 4: Detect period (/year → chia 12) ───────────────────────────────
     is_yearly = bool(_YEAR_RE.search(text))
 
-    # ── FIX 1 & 2 & 7: Extract numbers với suffix + separator đúng ──────────
     nums = _extract_salary_numbers(text_main, currency)
-
     if not nums:
-        # Thử lại với toàn bộ text (không bỏ bonus text)
         nums = _extract_salary_numbers(text, currency)
-
     if not nums:
         return _base
 
-    # ── Phán đoán min / max ──────────────────────────────────────────────────
     lo_kw = ["từ", "from", "trên", "hơn", "minimum", "tối thiểu", "at least",
              "ít nhất", "starting", "bắt đầu từ"]
     hi_kw = ["đến", "tới", "up to", "upto", "up-to", "dưới", "maximum", "tối đa",
              "không quá", "tối đa"]
 
-    is_hi_only = any(kw in text_main for kw in hi_kw) or bool(re.search(r"\bupto\b|\bup[\s\-]+to\b", text_main))
+    is_hi_only = any(kw in text_main for kw in hi_kw) or bool(
+        re.search(r"\bupto\b|\bup[\s\-]+to\b", text_main))
     is_lo_only = any(kw in text_main for kw in lo_kw)
 
     if len(nums) == 1:
@@ -954,17 +965,14 @@ def parse_compensation(raw: str) -> dict:
         else:
             sal_min = sal_max = val
     else:
-        # FIX 1: lấy đúng min/max từ sorted list
         sal_min, sal_max = nums[0], nums[-1]
 
-    # ── FIX 4: Normalize /year → /month ─────────────────────────────────────
     if is_yearly:
         if sal_min is not None:
             sal_min = round(sal_min / 12, 2)
         if sal_max is not None:
             sal_max = round(sal_max / 12, 2)
 
-    # ── Sanity check: bỏ cặp min/max không hợp lý ───────────────────────────
     if sal_min is not None and sal_max is not None and sal_min > sal_max:
         sal_min, sal_max = sal_max, sal_min
 
@@ -977,45 +985,10 @@ def parse_compensation(raw: str) -> dict:
     }
 
 
-# # ==============================================================================
-# # Quick smoke-test (python etl_patched.py)
-# # ==============================================================================
+# ==============================================================================
+# 2.8 Experience
+# ==============================================================================
 
-# if __name__ == "__main__":
-#     cases = [
-#         # (input, expected_min, expected_max, expected_currency)
-#         ("15 - 25triệu",                         15_000_000,  25_000_000, "VND"),
-#         ("12 - 20 triệu",                         12_000_000,  20_000_000, "VND"),
-#         ("20,000,000 - 40,000,000đ",              20_000_000,  40_000_000, "VND"),
-#         ("15.000.000 - 25.000.000 VND",           15_000_000,  25_000_000, "VND"),
-#         ("80.000.000/tháng",                      80_000_000,  80_000_000, "VND"),
-#         ("upto 3.5k",                                   None,       3_500, "USD"),   # k USD
-#         ("Up-to 34,000 usd/year",                       None,       2_833, "USD"),   # /year ÷12
-#         ("JPY 4,000,000 – 9,000,000",              4_000_000,   9_000_000, "JPY"),
-#         ("up to 30M. OKR/KPI bonus...",                 None,  30_000_000, "VND"),
-#         ("15,000,000 VND – 35,000,000 VND (based on experience and performance)",
-#                                                   15_000_000,  35_000_000, "VND"),
-#         ("thỏa thuận",                                  None,        None, None),
-#         ("1000 - 2000 USD",                            1_000,       2_000, "USD"),
-#         ("từ 20 triệu",                           20_000_000,        None, "VND"),
-#         ("$3,000 - $5,000",                            3_000,       5_000, "USD"),
-#     ]
-
-#     print(f"{'Input':<55} {'min':>12} {'max':>12} {'cur':>5} {'neg':>4}")
-#     print("-" * 95)
-#     for raw, exp_min, exp_max, exp_cur in cases:
-#         r = parse_compensation(raw)
-#         ok_min = "✓" if r["salary_min"] == exp_min else f"✗(got {r['salary_min']})"
-#         ok_max = "✓" if r["salary_max"] == exp_max else f"✗(got {r['salary_max']})"
-#         ok_cur = "✓" if r["salary_currency"] == exp_cur else f"✗(got {r['salary_currency']})"
-#         print(f"{raw:<55} {str(r['salary_min']):>12} {str(r['salary_max']):>12} "
-#               f"{str(r['salary_currency']):>5} {r['is_negotiable']:>4}  "
-#               f"min:{ok_min} max:{ok_max} cur:{ok_cur}")
-
-# ── 2.8 Experience ────────────────────────────────────────────────────────────
-
-# FIX: Từ khóa bắt buộc phải có khi scan JD/requirement
-# Chỉ lấy exp từ JD/req khi đi kèm với các từ khóa yêu cầu rõ ràng
 _EXP_REQUIREMENT_KW: list[str] = [
     "tối thiểu", "yêu cầu", "cần có", "có ít nhất", "ít nhất",
     "kinh nghiệm làm việc", "kinh nghiệm tối thiểu",
@@ -1029,79 +1002,22 @@ _EXP_REQUIREMENT_KW: list[str] = [
     r"\d+\s+to\s+\d+\s+years?",
     r"\d+[-–]\d+\s+years?",
 ]
- 
+
 _EXP_REQ_RE = re.compile("|".join(_EXP_REQUIREMENT_KW), re.IGNORECASE | re.UNICODE)
 
 
-def parse_experience(raw: str, job_desc: str = "", job_req: str = "") -> dict:
-    """
-    FIX B: dùng _extract_exp_nums (hỗ trợ thập phân) thay vì findall số nguyên.
-    "0,5 năm" → exp_min=0.5, exp_max=0.5 (không còn bị tách thành 0 và 5).
-    """
-    base = {"exp_min_yr": None, "exp_max_yr": None, "is_exp_required": None}
- 
-    raw_s = _s(raw)
-    if raw_s:
-        combined = _normalize_exp_text(raw_s.lower())
-        if any(kw in combined for kw in NO_EXP_KW):
-            return {"exp_min_yr": 0.0, "exp_max_yr": 0.0, "is_exp_required": 0}
- 
-        nums = _extract_exp_nums(combined)
-        if nums:
-            if "tháng" in combined and "năm" not in combined:
-                nums = [round(n / 12, 2) for n in nums]
-            return _parse_exp_nums(combined, nums)
- 
-    for source_text in [_s(job_req), _s(job_desc)]:
-        if not source_text:
-            continue
-        source_lower = _normalize_exp_text(source_text.lower())
-        sentences = re.split(r"[.\n\r]", source_lower)
-        for sent in sentences:
-            sent = sent.strip()
-            if not sent or not _EXP_REQ_RE.search(sent):
-                continue
-            if any(kw in sent for kw in NO_EXP_KW):
-                return {"exp_min_yr": 0.0, "exp_max_yr": 0.0, "is_exp_required": 0}
- 
-            nums = _extract_exp_nums(sent)
-            nums = [n for n in nums if 0 <= n <= 50]
-            if not nums:
-                continue
-            if "tháng" in sent and "năm" not in sent:
-                nums = [round(n / 12, 2) for n in nums]
- 
-            result = _parse_exp_nums(sent, nums)
-            if result.get("exp_min_yr") is not None or result.get("exp_max_yr") is not None:
-                return result
- 
-    return base
- 
 def _normalize_exp_text(text: str) -> str:
-    """
-    Chuẩn hoá văn bản kinh nghiệm trước khi extract số:
-    - "0,5 năm" → "0.5 năm"   (dấu phẩy thập phân VN → dấu chấm)
-    - "1,5 năm" → "1.5 năm"
-    Chỉ replace dấu ',' là decimal (không phải thousand-sep).
-    Quy tắc: N,D năm với D là 1 chữ số → decimal.
-    """
-    # Dấu phẩy thập phân kiểu Việt: số,chữ_số_đơn (vd: 0,5 / 1,5 / 2,5)
-    text = re.sub(r"(\d),(\d)(?!\d)", r"\1.\2", text)
-    return text
+    return re.sub(r"(\d),(\d)(?!\d)", r"\1.\2", text)
+
+
 def _extract_exp_nums(text: str) -> list[float]:
-    """
-    Extract số thập phân từ text kinh nghiệm.
-    Hỗ trợ: "0.5", "1.5", "2+", "3-5", v.v.
-    """
     text = _normalize_exp_text(text)
-    # Tìm số thập phân (bao gồm cả 0.5, 1.5...)
     return [float(n) for n in re.findall(r"\d+(?:\.\d+)?", text)]
- 
+
 
 def _parse_exp_nums(text: str, nums: list[float]) -> dict:
-    """Helper: từ danh sách số và text → dict exp."""
     exp_min = exp_max = None
- 
+
     if "dưới 1" in text:
         exp_min, exp_max = 0.0, 1.0
     elif any(kw in text for kw in ["trên", "hơn", "over", "minimum", "tối thiểu",
@@ -1113,25 +1029,85 @@ def _parse_exp_nums(text: str, nums: list[float]) -> dict:
         exp_min, exp_max = min(nums[0], nums[1]), max(nums[0], nums[1])
     else:
         exp_min = exp_max = nums[0]
- 
+
     if exp_min is None and exp_max is None:
         return {"exp_min_yr": None, "exp_max_yr": None, "is_exp_required": None}
- 
+
     return {"exp_min_yr": exp_min, "exp_max_yr": exp_max, "is_exp_required": 1}
 
-# ── 2.9 Level ─────────────────────────────────────────────────────────────────
+
+def parse_experience(raw: str, job_desc: str = "", job_req: str = "") -> dict:
+    base = {"exp_min_yr": None, "exp_max_yr": None, "is_exp_required": None}
+
+    raw_s = _s(raw)
+    if raw_s:
+        combined = _normalize_exp_text(raw_s.lower())
+        if any(kw in combined for kw in NO_EXP_KW):
+            return {"exp_min_yr": 0.0, "exp_max_yr": 0.0, "is_exp_required": 0}
+
+        nums = _extract_exp_nums(combined)
+        if nums:
+            if "tháng" in combined and "năm" not in combined:
+                nums = [round(n / 12, 2) for n in nums]
+            return _parse_exp_nums(combined, nums)
+
+    for source_text in [_s(job_req), _s(job_desc)]:
+        if not source_text:
+            continue
+        source_lower = _normalize_exp_text(source_text.lower())
+        sentences = re.split(r"[.\n\r]", source_lower)
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent or not _EXP_REQ_RE.search(sent):
+                continue
+            if any(kw in sent for kw in NO_EXP_KW):
+                return {"exp_min_yr": 0.0, "exp_max_yr": 0.0, "is_exp_required": 0}
+
+            nums = _extract_exp_nums(sent)
+            nums = [n for n in nums if 0 <= n <= 50]
+            if not nums:
+                continue
+            if "tháng" in sent and "năm" not in sent:
+                nums = [round(n / 12, 2) for n in nums]
+
+            result = _parse_exp_nums(sent, nums)
+            if result.get("exp_min_yr") is not None or result.get("exp_max_yr") is not None:
+                return result
+
+    return base
+
+
+# ==============================================================================
+# 2.9 Level
+# ==============================================================================
+
+def _match_level_in_text(text: str) -> str | None:
+    t = text.lower()
+    for kws, label in reversed(LEVEL_MAP):
+        for kw in kws:
+            if any(c in kw for c in r"\^$[]{}|?+*()"):
+                pattern = kw
+            else:
+                pattern = r"(?:^|\W)" + re.escape(kw) + r"(?:$|\W)"
+            if re.search(pattern, t):
+                return label
+    return None
+
 
 def parse_level(level_raw: str, job_title_raw: str,
                 exp_min: float | None, exp_max: float | None,
                 job_desc: str = "", job_req: str = "") -> str | None:
-    for source in [_s(level_raw), _s(job_title_raw),
-                   _s(job_desc)[:800], _s(job_req)[:800]]:
+    for source in [
+        _s(level_raw),
+        _s(job_title_raw),
+        _s(job_desc)[:500],
+        _s(job_req)[:500],
+    ]:
         if not source:
             continue
-        t = source.lower()
-        for kws, label in LEVEL_MAP:
-            if any(re.search(r"(?:^|\W)" + re.escape(k) + r"(?:$|\W)", t) for k in kws):
-                return label
+        label = _match_level_in_text(source)
+        if label:
+            return label
 
     if exp_min is not None or exp_max is not None:
         avg = ((exp_min or 0.0) + (exp_max or exp_min or 0.0)) / 2
@@ -1139,13 +1115,12 @@ def parse_level(level_raw: str, job_title_raw: str,
             if lo <= avg < hi:
                 return label
 
-    if exp_min is not None:
-        return "Fresher" if exp_min == 0 else "Mid-level"
-
     return "Mid-level"
 
 
-# ── 2.10 JD fields ────────────────────────────────────────────────────────────
+# ==============================================================================
+# 2.10 JD fields
+# ==============================================================================
 
 def parse_jd_fields(job_desc: str, job_req: str,
                     job_category_raw: str, website: str) -> dict:
@@ -1190,14 +1165,11 @@ def parse_jd_fields(job_desc: str, job_req: str,
     }
 
 
-# ── 2.11 Education ────────────────────────────────────────────────────────────
+# ==============================================================================
+# 2.11 Education
+# ==============================================================================
 
 def parse_education(edu_raw: str, job_desc: str, job_req: str) -> str:
-    """
-    Trả về label education để ghi vào education_clean.
-    KHÔNG ghi đè edu_raw (education_level).
-    Fallback → "Không yêu cầu".
-    """
     sources = [_s(edu_raw), _s(job_req), _s(job_desc)]
     for source in sources:
         if not source:
@@ -1209,9 +1181,11 @@ def parse_education(edu_raw: str, job_desc: str, job_req: str) -> str:
             if any(k in t for k in kws):
                 return label
     return "Không yêu cầu"
- 
 
-# ── 2.12 Company size ─────────────────────────────────────────────────────────
+
+# ==============================================================================
+# 2.12 Company size
+# ==============================================================================
 
 def parse_company_size(raw: str) -> dict:
     base = {"company_size_min": None, "company_size_max": None}
@@ -1232,12 +1206,13 @@ def parse_company_size(raw: str) -> dict:
     return {"company_size_min": nums[0], "company_size_max": nums[0]}
 
 
-# ── 2.13 Industry ─────────────────────────────────────────────────────────────
+# ==============================================================================
+# 2.13 Industry
+# ==============================================================================
 
 _UNKNOWN_INDUSTRY = {
     "industry_level1": "Không xác định",
-    "industry_level2": "NA",
-    "industry_level3": "Không xác định",
+    "industry_level2": "Không xác định",
 }
 
 
@@ -1245,26 +1220,26 @@ def parse_industry(raw: str, major: str | None = None) -> dict:
     text = (_s(raw) + " " + _s(major)).lower()
     if not text.strip():
         return _UNKNOWN_INDUSTRY.copy()
+
     for entry in INDUSTRY_TREE:
         if any(kw in text for kw in entry["kw"]):
-            return {"industry_level1": entry["l1"],
-                    "industry_level2": entry["l2"],
-                    "industry_level3": entry["l3"]}
+            return {
+                "industry_level1": entry["l1"],
+                "industry_level2": entry["l2"],
+            }
+
     return _UNKNOWN_INDUSTRY.copy()
 
 
-# ── 2.14 Number recruit ───────────────────────────────────────────────────────
+# ==============================================================================
+# 2.14 Number recruit
+# ==============================================================================
 
 def parse_number_recruit(num_raw: str, job_title_raw: str) -> int:
-    """
-    Trả về int để ghi vào number_recruit_clean.
-    KHÔNG ghi đè number_recruit (raw column).
-    Fallback → 1.
-    """
     s = _s(num_raw)
     if s.upper() in ("NULL", "N/A", "NONE", ""):
         s = ""
- 
+
     if s:
         sl = s.lower()
         if any(k in sl for k in ["nhiều", "số lượng lớn", "vô hạn", "không giới hạn"]):
@@ -1272,7 +1247,7 @@ def parse_number_recruit(num_raw: str, job_title_raw: str) -> int:
         col_nums = [int(x) for x in re.findall(r"\d+", sl) if 0 < int(x) < 1000]
         if col_nums:
             return max(col_nums)
- 
+
     title = _s(job_title_raw).lower()
     found = []
     for pat in [r"tuyển\s+(\d+)", r"(\d+)\s+vị trí", r"(\d+)\s+nhân sự",
@@ -1284,10 +1259,10 @@ def parse_number_recruit(num_raw: str, job_title_raw: str) -> int:
             val = int(m.group(1))
             if 1 <= val < 200:
                 found.append(val)
- 
+
     return max(found) if found else 1
- 
- 
+
+
 # ==============================================================================
 # 3. ERROR COLLECTOR
 # ==============================================================================
@@ -1316,7 +1291,6 @@ class ErrorCollector:
 
 
 def _nan_to_none(rows: list[dict]) -> list[dict]:
-    """Convert tất cả nan/NaT/NaN → None để MySQL nhận là NULL."""
     cleaned = []
     for row in rows:
         new_row = {}
@@ -1336,6 +1310,111 @@ def _nan_to_none(rows: list[dict]) -> list[dict]:
 
 
 # ==============================================================================
+# 3.5 COMPANY DEDUPLICATOR
+# ==============================================================================
+
+class CompanyDeduplicator:
+    THRESHOLD = 88
+
+    def __init__(self):
+        self._fuzz = None
+        try:
+            from rapidfuzz import fuzz as _f
+            self._fuzz = _f
+        except ImportError:
+            try:
+                from thefuzz import fuzz as _f
+                self._fuzz = _f
+            except ImportError:
+                print("⚠ rapidfuzz/thefuzz không tìm thấy — bỏ qua dedup công ty.")
+
+    @property
+    def available(self) -> bool:
+        return self._fuzz is not None
+
+    @staticmethod
+    def _make_uf(items):
+        parent = {x: x for x in items}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(x, y):
+            parent[find(y)] = find(x)
+
+        return find, union, parent
+
+    def build_mapping(self, name_key_pairs: list[tuple[str, str]]) -> dict[str, str]:
+        if not self.available:
+            return {}
+
+        valid = [(n, k) for n, k in name_key_pairs if n and k]
+        if not valid:
+            return {}
+
+        unique_map: dict[str, str] = {}
+        for n, k in valid:
+            if n not in unique_map:
+                unique_map[n] = k
+        names = list(unique_map.keys())
+
+        blocks: dict[str, list[str]] = {}
+        for name in names:
+            prefix = unique_map[name][:2]
+            blocks.setdefault(prefix, []).append(name)
+
+        find, union, _ = self._make_uf(names)
+
+        for block in blocks.values():
+            if len(block) < 2:
+                continue
+            for i in range(len(block)):
+                ki = unique_map[block[i]]
+                for j in range(i + 1, len(block)):
+                    kj = unique_map[block[j]]
+                    if self._fuzz.token_sort_ratio(ki, kj) >= self.THRESHOLD:
+                        union(block[i], block[j])
+
+        groups: dict[str, list[str]] = {}
+        for name in names:
+            groups.setdefault(find(name), []).append(name)
+
+        mapping: dict[str, str] = {}
+        for members in groups.values():
+            rep = max(members, key=len)
+            for m in members:
+                mapping[m] = rep
+
+        return mapping
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if not self.available or "company_title_clean" not in df.columns:
+            return df
+
+        pairs = list(zip(
+            df["company_title_clean"].fillna(""),
+            df.get("company_canonical_key", pd.Series([""] * len(df))).fillna(""),
+        ))
+        mapping = self.build_mapping(pairs)
+        if not mapping:
+            return df
+
+        total_before = df["company_title_clean"].nunique()
+        df["company_title_clean"] = df["company_title_clean"].map(
+            lambda x: mapping.get(x, x) if pd.notna(x) else x
+        )
+        total_after = df["company_title_clean"].nunique()
+        n_merged = total_before - total_after
+
+        print(f"   🔗 Dedup công ty: {total_before:,} tên → {total_after:,} tên đại diện "
+              f"(gộp {n_merged:,} tên trùng).")
+        return df
+
+
+# ==============================================================================
 # 4. ETL CLASS
 # ==============================================================================
 
@@ -1344,6 +1423,7 @@ class RecruitmentETL:
     def __init__(self, connection_string: str):
         self.engine = sqlalchemy.create_engine(connection_string)
         self._ensure_tables()
+        self._migrate_tables()
         print("✅ Kết nối DB & 3 bảng output sẵn sàng.")
 
     def _ensure_tables(self):
@@ -1351,9 +1431,26 @@ class RecruitmentETL:
             for ddl in [_DDL_FACT, _DDL_LOG, _DDL_ERROR]:
                 conn.execute(sqlalchemy.text(ddl))
 
+    def _migrate_tables(self):
+        migrations = [
+            f"ALTER TABLE {FACT_TABLE} ADD COLUMN company_canonical_key VARCHAR(200) NULL AFTER company_type",
+            f"ALTER TABLE {FACT_TABLE} ADD COLUMN job_title_detect VARCHAR(150) NULL AFTER job_title",
+        ]
+        with self.engine.begin() as conn:
+            for sql in migrations:
+                try:
+                    conn.execute(sqlalchemy.text(sql))
+                    print(f"   ✅ Migration: {sql[:60]}...")
+                except Exception as e:
+                    if "Duplicate column name" in str(e) or "1060" in str(e):
+                        pass
+                    else:
+                        raise
+
     def _start_log(self, mode: str, target_date) -> int:
         with self.engine.begin() as conn:
-            td_value = None if str(target_date) == "all" else (str(target_date) if target_date else None)
+            td_value = None if str(target_date) == "all" else (
+                str(target_date) if target_date else None)
             r = conn.execute(sqlalchemy.text(f"""
                 INSERT INTO {LOG_TABLE} (run_date, mode, target_date, started_at, status)
                 VALUES (CURDATE(), :mode, :td, NOW(), 'RUNNING')
@@ -1451,8 +1548,13 @@ class RecruitmentETL:
                  fallback={"job_posted_at_clean": None, "job_deadline_clean": None})
 
             _try("job_title", parse_job_title,
-     row["job_title"], row["job_category"],   # ← thêm job_category raw
-     fallback={"job_title_clean": None, "job_category_clean": "Other", "is_it": 0})
+                row["job_title"], row["job_category"],
+                fallback={
+                    "job_title_clean":    None,
+                    "job_title_detect":   None,
+                    "job_category_clean": "Non-IT",
+                    "is_it":              0,
+                })
             _try("company_title", parse_company_title, row["company_title"],
                  fallback={"company_title_clean": None, "company_type": None})
 
@@ -1490,7 +1592,7 @@ class RecruitmentETL:
                 )
             except Exception as e:
                 ec.add(run_id, src_id, job_url, "education_clean",
-                    row["education_level"], "PARSE_FAIL", str(e))
+                       row["education_level"], "PARSE_FAIL", str(e))
                 row["education_clean"] = "Không yêu cầu"
 
             _try("company_size", parse_company_size, row["company_size"],
@@ -1506,9 +1608,9 @@ class RecruitmentETL:
                 )
             except Exception as e:
                 ec.add(run_id, src_id, job_url, "number_recruit_clean",
-                    row["number_recruit"], "PARSE_FAIL", str(e))
+                       row["number_recruit"], "PARSE_FAIL", str(e))
                 row["number_recruit_clean"] = 1
-            # Đảm bảo level_clean luôn có giá trị
+
             if "level_clean" not in row or row.get("level_clean") is None:
                 try:
                     lv = parse_level(
@@ -1520,7 +1622,6 @@ class RecruitmentETL:
                 except Exception:
                     row["level_clean"] = "Mid-level"
 
-            # Location → explode mỗi tỉnh thành 1 row
             try:
                 locs = parse_location(row["location"])
             except Exception as e:
@@ -1621,6 +1722,10 @@ class RecruitmentETL:
             df_clean, ec = self._transform(df_raw, run_id)
             counts["output"] = len(df_clean)
             counts["errors"] = len(ec)
+
+            print("\n⏳ [2.5/4] Dedup công ty...")
+            deduper = CompanyDeduplicator()
+            df_clean = deduper.apply(df_clean)
 
             print("\n⏳ [3/4] Save fact...")
             saved = self._save_fact(df_clean)

@@ -9,65 +9,93 @@ set SCRAPY_DIR=%~dp0
 set SPIDER_DIR=%SCRAPY_DIR%jobscrapers\spiders\
 set PYTHONPATH=%SCRAPY_DIR%jobscrapers;%SCRAPY_DIR%;%PYTHONPATH%
 
-:: Dùng file tạm để đếm lỗi (setlocal không chia sẻ biến qua subroutine)
+:: FIX 1 — Define LOG_FILE
+set LOG_FILE=%SCRAPY_DIR%pipeline_%DATE:~6,4%%DATE:~3,2%%DATE:~0,2%.log
+
 set ERROR_FILE=%TEMP%\pipeline_errors.tmp
 echo 0 > "%ERROR_FILE%"
 
-echo.
-echo ============================================================
-echo  Pipeline bat dau  %DATE% %TIME%
-echo  Mode    : %MODE%
-echo ============================================================
-echo.
+echo. >> "%LOG_FILE%"
+echo ============================================================ >> "%LOG_FILE%"
+echo  Pipeline bat dau  %DATE% %TIME% >> "%LOG_FILE%"
+echo  Mode    : %MODE% >> "%LOG_FILE%"
+echo ============================================================ >> "%LOG_FILE%"
+
+:: Also print to console
+type "%LOG_FILE%"
 
 :: ============================
 ::  PHAN 1 — SELENIUM SCRIPTS
 :: ============================
 
-echo [Selenium] Bat dau chay cac scripts...
-echo.
-
 call :run_selenium linkedin_selenium.py
 call :run_selenium itviec_selenium.py
 
-echo.
-echo [Selenium] Hoan thanh tat ca scripts.
-echo.
-
 :: ==========================
-::  PHAN 2 — SCRAPY (song song)
+::  PHAN 2 — SCRAPY
 :: ==========================
 
-echo [Scrapy] Bat dau chay tat ca spider song song...
-echo.
+echo [Scrapy] Bat dau chay tat ca spider song song... >> "%LOG_FILE%"
 
-"%PYTHON%" "%SCRAPY_DIR%run_spiders.py" %MODE%
+"%PYTHON%" "%SCRAPY_DIR%run_spiders.py" %MODE% >> "%LOG_FILE%" 2>&1
 
 if %ERRORLEVEL%==0 (
-    echo [Scrapy] OK — Tat ca spider hoan thanh
+    echo [Scrapy] OK — Tat ca spider hoan thanh >> "%LOG_FILE%"
 ) else (
-    echo [Scrapy] FAIL (exit=%ERRORLEVEL%)
+    echo [Scrapy] FAIL (exit=%ERRORLEVEL%) >> "%LOG_FILE%"
     echo 1 > "%ERROR_FILE%"
 )
-echo.
+
 :: ==========================
 ::  PHAN 3 — ETL
 :: ==========================
 
-echo [ETL] Bat dau xu ly du lieu...
-echo.
+:: FIX 2 — Actually guard ETL on Scrapy success
+set /p CURRENT_ERR=<"%ERROR_FILE%"
+if "%CURRENT_ERR%"=="1" (
+    echo [ETL] SKIP — Scrapy co loi, bo qua ETL >> "%LOG_FILE%"
+    goto :skip_etl
+)
 
-:: Chỉ chạy ETL nếu Scrapy không lỗi nghiêm trọng
-:: Bỏ điều kiện này nếu muốn ETL luôn chạy dù scraper lỗi
-"%PYTHON%" "%SCRAPY_DIR%transform.py"
+echo [ETL] Bat dau xu ly du lieu... >> "%LOG_FILE%"
+
+if /I "%MODE%"=="full" (
+    "%PYTHON%" "%SCRAPY_DIR%jobscrapers\transform.py" --all >> "%LOG_FILE%" 2>&1
+) else (
+    "%PYTHON%" "%SCRAPY_DIR%jobscrapers\transform.py" >> "%LOG_FILE%" 2>&1
+)
 
 if %ERRORLEVEL%==0 (
-    echo [ETL] OK — ETL hoan thanh
+    echo [ETL] OK — ETL hoan thanh >> "%LOG_FILE%"
 ) else (
-    echo [ETL] FAIL (exit=%ERRORLEVEL%)
+    echo [ETL] FAIL (exit=%ERRORLEVEL%) >> "%LOG_FILE%"
     echo 1 > "%ERROR_FILE%"
 )
-echo.
+
+:skip_etl
+
+:: ==========================
+::  PHAN 4 — LOAD DW
+:: ==========================
+
+echo [DW] Bat dau nap Data Warehouse... >> "%LOG_FILE%"
+
+set MYSQL_HOST=localhost
+set MYSQL_USER=root
+set MYSQL_PASS=123456
+set MYSQL_DB=itta
+
+if /I "%MODE%"=="daily" (set SP_MODE=today) else (set SP_MODE=all)
+
+mysql -h %MYSQL_HOST% -u %MYSQL_USER% -p%MYSQL_PASS% %MYSQL_DB% ^
+    -e "CALL sp_ETL_Load_DW('%SP_MODE%', NULL);" >> "%LOG_FILE%" 2>&1
+
+if %ERRORLEVEL%==0 (
+    echo [DW] OK — Load DW hoan thanh >> "%LOG_FILE%"
+) else (
+    echo [DW] FAIL (exit=%ERRORLEVEL%) >> "%LOG_FILE%"
+    echo 1 > "%ERROR_FILE%"
+)
 
 :: ==========================
 ::  KET QUA TONG KET
@@ -76,16 +104,16 @@ echo.
 set /p ERRORS=<"%ERROR_FILE%"
 del "%ERROR_FILE%" 2>nul
 
-echo ============================================================
+echo ============================================================ >> "%LOG_FILE%"
 if "%ERRORS%"=="0" (
-    echo  KET QUA: Tat ca hoan thanh thanh cong!
+    echo  KET QUA: Tat ca hoan thanh thanh cong! >> "%LOG_FILE%"
 ) else (
-    echo  KET QUA: Co loi — xem log ben tren
+    echo  KET QUA: Co loi — xem: %LOG_FILE% >> "%LOG_FILE%"
 )
-echo  Ket thuc: %DATE% %TIME%
-echo ============================================================
-echo.
+echo  Ket thuc: %DATE% %TIME% >> "%LOG_FILE%"
+echo ============================================================ >> "%LOG_FILE%"
 
+type "%LOG_FILE%"
 exit /b %ERRORS%
 
 :: =============================================================
@@ -94,13 +122,12 @@ exit /b %ERRORS%
 
 :run_selenium
 set SCRIPT=%~1
-echo   [Selenium] Bat dau: %SCRIPT%
-"%PYTHON%" "%SPIDER_DIR%%SCRIPT%" --mode=%MODE%
+echo   [Selenium] Bat dau: %SCRIPT% >> "%LOG_FILE%"
+"%PYTHON%" "%SPIDER_DIR%%SCRIPT%" --mode=%MODE% >> "%LOG_FILE%" 2>&1
 if %ERRORLEVEL%==0 (
-    echo   [Selenium] OK    %SCRIPT%
+    echo   [Selenium] OK    %SCRIPT% >> "%LOG_FILE%"
 ) else (
-    echo   [Selenium] FAIL  %SCRIPT%  (exit=%ERRORLEVEL%)
+    echo   [Selenium] FAIL  %SCRIPT% (exit=%ERRORLEVEL%) >> "%LOG_FILE%"
     echo 1 > "%ERROR_FILE%"
 )
-echo.
 exit /b 0
