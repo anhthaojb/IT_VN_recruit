@@ -24,7 +24,7 @@ chromedriver_autoinstaller.install(no_ssl=True)
 #  CONFIG
 # =========================================================
 
-MAX_JOBS_PER_KEYWORD = 20
+MAX_JOBS_PER_KEYWORD = 10
 
 KEYWORDS_BY_CATEGORY = {
     "software_dev": [

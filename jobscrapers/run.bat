@@ -7,10 +7,16 @@ set MODE=daily
 set PYTHON=D:\ITTA\venv\Scripts\python.exe
 set SCRAPY_DIR=%~dp0
 set SPIDER_DIR=%SCRAPY_DIR%jobscrapers\spiders\
-set PYTHONPATH=%SCRAPY_DIR%jobscrapers;%SCRAPY_DIR%;%PYTHONPATH%
+set PYTHONPATH=%SCRAPY_DIR%jobscrapers\spiders;%SCRAPY_DIR%jobscrapers;%SCRAPY_DIR%;%PYTHONPATH%
 
-:: FIX 1 — Define LOG_FILE
-set LOG_FILE=%SCRAPY_DIR%pipeline_%DATE:~6,4%%DATE:~3,2%%DATE:~0,2%.log
+:: FIX unicode
+set PYTHONIOENCODING=utf-8
+
+:: FIX mysql path
+set PATH=%PATH%;C:\Program Files\MySQL\MySQL Server 9.4\bin
+
+:: FIX LOG_FILE — DATE format "Mon 04/27/2026"
+set LOG_FILE=%SCRAPY_DIR%pipeline_%DATE:~10,4%%DATE:~4,2%%DATE:~7,2%.log
 
 set ERROR_FILE=%TEMP%\pipeline_errors.tmp
 echo 0 > "%ERROR_FILE%"
@@ -21,7 +27,6 @@ echo  Pipeline bat dau  %DATE% %TIME% >> "%LOG_FILE%"
 echo  Mode    : %MODE% >> "%LOG_FILE%"
 echo ============================================================ >> "%LOG_FILE%"
 
-:: Also print to console
 type "%LOG_FILE%"
 
 :: ============================
@@ -50,7 +55,6 @@ if %ERRORLEVEL%==0 (
 ::  PHAN 3 — ETL
 :: ==========================
 
-:: FIX 2 — Actually guard ETL on Scrapy success
 set /p CURRENT_ERR=<"%ERROR_FILE%"
 if "%CURRENT_ERR%"=="1" (
     echo [ETL] SKIP — Scrapy co loi, bo qua ETL >> "%LOG_FILE%"

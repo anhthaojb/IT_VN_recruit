@@ -43,7 +43,7 @@ if unknown and unknown[0] in ["daily", "full"]:
     args.mode = unknown[0]
 
 # ===== CONFIG =====
-MAX_JOBS_PER_KEYWORD = 20  # KPI: chỉ tính job MỚI
+MAX_JOBS_PER_KEYWORD = 10  # KPI: chỉ tính job MỚI
 JOB_DETAIL_WAIT      = 12
 MIN_ABOUT_JOB_CHARS  = 200
 DAILY_MAX_AGE_DAYS   = 3
