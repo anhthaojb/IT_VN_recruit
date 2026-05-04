@@ -107,15 +107,19 @@ class VietnamworkSpider(scrapy.Spider):
     # ------------------------------------------------------------------
 
     def _map_job(self, job: dict) -> JobItem:
-        # ── Lương ──────────────────────────────────────────────────
-        salary_min = job.get("salaryMin", 0)
-        salary_max = job.get("salaryMax", 0)
-        currency   = job.get("salaryCurrency", "")
+       # ── Lương ──────────────────────────────────────────────────
+        salary_min      = job.get("salaryMin", 0)
+        salary_max      = job.get("salaryMax", 0)
+        currency        = job.get("salaryCurrency", "")
+        salary_period_id = job.get("salaryPeriodId", 1)
+
+        PERIOD_SUFFIX = {1: "/tháng", 2: "/năm"}
+        period_suffix = PERIOD_SUFFIX.get(salary_period_id, "")
+
         if salary_min or salary_max:
-            compensation = f"{salary_min:,} - {salary_max:,} {currency}".strip()
+            compensation = f"{salary_min:,} - {salary_max:,} {currency} {period_suffix}".strip()
         else:
             compensation = job.get("prettySalary", "Thỏa thuận")
-
         # ── Địa điểm ───────────────────────────────────────────────
         locations = job.get("workingLocations") or []
         location  = locations[0].get("cityNameVI", "") if locations else ""

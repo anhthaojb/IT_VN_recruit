@@ -541,7 +541,7 @@ def init_driver():
         "prefs",
         {"profile.managed_default_content_settings.images": 2}
     )
-    return uc.Chrome(options=opts, driver_executable_path=chromedriver_autoinstaller.install(), version_main=147)
+    return uc.Chrome(options=opts, driver_executable_path=chromedriver_autoinstaller.install())
 
 
 

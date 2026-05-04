@@ -43,7 +43,7 @@ if unknown and unknown[0] in ["daily", "full"]:
     args.mode = unknown[0]
 
 # ===== CONFIG =====
-MAX_JOBS_PER_KEYWORD = 10  # KPI: chỉ tính job MỚI
+MAX_JOBS_PER_KEYWORD = 30  # KPI: chỉ tính job MỚI
 JOB_DETAIL_WAIT      = 12
 MIN_ABOUT_JOB_CHARS  = 200
 DAILY_MAX_AGE_DAYS   = 3
@@ -234,7 +234,7 @@ def init_driver():
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--lang=vi-VN,vi;q=0.9,en-US;q=0.8")
 
-    driver = uc.Chrome(options=opts, driver_executable_path=chromedriver_autoinstaller.install(), version_main=147)
+    driver = uc.Chrome(options=opts, driver_executable_path=chromedriver_autoinstaller.install())
     driver.set_page_load_timeout(60)
     driver.set_script_timeout(20)
     return driver

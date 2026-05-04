@@ -41,7 +41,7 @@ Use empty string "" if information is not present.
 {
   "job_description" : "ONLY the responsibilities/duties section. What the candidate will DO. Plain text, no bullet symbols.",
   "job_requirement" : "ONLY the requirements/qualifications section. What the candidate MUST HAVE (skills, experience, education). Plain text, no bullet symbols.",
-  "compensation"    : "Salary/pay range if explicitly mentioned. Use empty string if not found.",
+  "compensation"    : "Salary/pay range if explicitly mentioned, INCLUDING the time period (e.g. '/year', '/month', '/năm', '/tháng'). Examples: '100000-120000 USD/year', '2000-3000 USD/month', '20-30 triệu/tháng'. ALWAYS include /year or /month. Use empty string if not found.",
   "level"           : "Seniority level: Junior / Mid / Senior / Manager / Director / Intern. Empty string if unclear.",
   "job_type"        : "Employment type: Full-time / Part-time / Contract / Freelance / Internship. Empty string if not mentioned.",
   "work_mode"       : "Work arrangement: On-site / Remote / Hybrid. Empty string if not mentioned.",
@@ -57,12 +57,13 @@ CRITICAL RULES:
 5. Do not invent any information not present in the source text.
 6. Keep Vietnamese text in Vietnamese. Keep English text in English.
 7. Remove bullet point symbols (-, •, *, ▪) from all values — plain sentences only.
+8. For compensation, ALWAYS append /year or /month based on context. If unclear, assume /year for USD amounts > 10000, /month for smaller amounts.
 
 EXAMPLE OUTPUT:
 {
-  "job_description": "Phát triển các tính năng mới cho hệ thống. Phối hợp với các phòng ban đề xuất giải pháp. Nghiên cứu công nghệ phần mềm mới.",
-  "job_requirement": "Tốt nghiệp Đại học chuyên ngành CNTT. Có kiến thức về Java hoặc Python. Tiếng Anh tối thiểu 550 TOEIC.",
-  "compensation": "",
+  "job_description": "Phát triển các tính năng mới cho hệ thống. Phối hợp với các phòng ban đề xuất giải pháp.",
+  "job_requirement": "Tốt nghiệp Đại học chuyên ngành CNTT. Có kiến thức về Java hoặc Python.",
+  "compensation": "100000-120000 USD/year",
   "level": "Junior",
   "job_type": "Full-time",
   "work_mode": "On-site",

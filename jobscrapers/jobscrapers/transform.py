@@ -836,8 +836,36 @@ _RANGE_SUFFIX_RE = re.compile(
     re.UNICODE,
 )
 
-_YEAR_RE  = re.compile(r"/\s*year|per\s+year|/\s*yr|/\s*năm|/\s*annum", re.I)
-_MONTH_RE = re.compile(r"/\s*month|per\s+month|/\s*tháng|/\s*mo\b", re.I)
+# Thay _YEAR_RE cũ (chỉ bắt /năm) bằng version mở rộng hơn
+_YEAR_RE = re.compile(
+    r"/\s*year|per\s+year|/\s*yr|/\s*năm|/\s*annum"
+    r"|annually|hàng\s*năm|mỗi\s*năm"
+    r"|\bpa\b|\bp\.a\b",           # "pa" / "p.a" = per annum
+    re.I,
+)
+
+_MONTH_RE = re.compile(
+    r"/\s*month|per\s+month|/\s*tháng|/\s*mo\b"
+    r"|hàng\s*tháng|mỗi\s*tháng",
+    re.I,
+)
+
+# # Ngưỡng phát hiện lương theo năm (khi không có signal rõ ràng)
+# # VND > 100M/năm hoặc USD > 10K/năm thì mới tin là "theo năm"
+# _ANNUAL_THRESHOLD: dict[str, float] = {
+#     "VND": 100_000_000,
+#     "USD": 10_000,
+#     "JPY": 1_200_000,
+#     "EUR": 12_000,
+#     "SGD": 12_000,
+#     "GBP": 10_000,
+# }
+
+# # Các site mặc định đăng lương THEO NĂM
+# _ANNUAL_DEFAULT_SITES: set[str] = {
+#     "vietnamwork",
+#     "linkedin",         # LinkedIn thường dùng annual
+# }
 
 
 def _detect_currency(text: str) -> str:
@@ -915,6 +943,186 @@ def _split_main_bonus(text: str) -> str:
     return m.group(1) if m else text
 
 
+# ==============================================================================
+# 2.7 Compensation — rewrite triệt để
+# ==============================================================================
+
+_CURRENCY_TABLE: dict[str, float] = {
+    "USD": 25_500.0,
+    "VND": 1.0,
+    "JPY": 168.0,
+    "EUR": 27_500.0,
+    "SGD": 19_000.0,
+    "GBP": 32_000.0,
+    "AUD": 16_500.0,
+    "CAD": 18_500.0,
+    "KRW": 18.5,
+    "CNY": 3_500.0,
+    "THB": 700.0,
+}
+
+_CURRENCY_DETECT: list[tuple[str, str]] = [
+    (r"\$|usd|\bđô\b|dollar",                "USD"),
+    (r"vnđ|vnd|đ(?!ồng)|đồng|triệu|triêu|nghìn\s*đ|ngàn\s*đ", "VND"),
+    (r"\bjpy\b|¥|yen",                        "JPY"),
+    (r"\beur\b|€|euro",                       "EUR"),
+    (r"\bsgd\b|s\$",                          "SGD"),
+    (r"\bgbp\b|£|pound",                      "GBP"),
+    (r"\baud\b|a\$",                          "AUD"),
+    (r"\bcad\b|ca\$",                         "CAD"),
+    (r"\bkrw\b|₩|won",                        "KRW"),
+    (r"\bcny\b|rmb|yuan",                     "CNY"),
+    (r"\bthb\b|฿|baht",                       "THB"),
+]
+
+_NEG_KW: list[str] = [
+    "thỏa thuận", "thương lượng", "competitive", "negotiable",
+    "attractive", "market rate", "commensurate", "tbd", "t.b.d",
+    "to be discussed", "to be confirmed", "sẽ thảo luận",
+]
+
+_YEAR_RE = re.compile(
+    r"/\s*year|per\s+year|/\s*yr|/\s*năm|/\s*annum"
+    r"|annually|hàng\s*năm|mỗi\s*năm|\bpa\b|\bp\.a\b",
+    re.I,
+)
+_MONTH_RE = re.compile(
+    r"/\s*month|per\s+month|/\s*tháng|/\s*mo\b"
+    r"|hàng\s*tháng|mỗi\s*tháng",
+    re.I,
+)
+_HOUR_RE = re.compile(
+    r"/\s*hour|per\s+hour|/\s*hr\b|/\s*giờ|\bphp\b",
+    re.I,
+)
+
+# Sanity range (min, max) hợp lý theo tháng cho từng currency
+_MONTHLY_SANITY: dict[str, tuple[float, float]] = {
+    "USD": (50,     50_000),
+    "VND": (500_000, 500_000_000),
+    "JPY": (50_000,  5_000_000),
+    "EUR": (500,    30_000),
+    "SGD": (500,    30_000),
+    "GBP": (500,    30_000),
+    "AUD": (500,    30_000),
+    "CAD": (500,    30_000),
+    "KRW": (500_000, 50_000_000),
+    "CNY": (1_000,  200_000),
+    "THB": (5_000,  500_000),
+}
+
+# Nếu số < ngưỡng này → có thể đang ở đơn vị nhỏ hơn (vd VND đang là triệu)
+_UNIT_MULTIPLIER_THRESHOLD: dict[str, float] = {
+    "VND": 100_000,   # < 100k → likely in triệu → × 1_000_000... nhưng
+                      # thực ra "300 VND" có thể là 300k → × 1000
+}
+
+# Pattern ngày tháng — tránh parse "31/05/2026" thành salary
+_DATE_PAT = re.compile(
+    r"\b\d{1,2}[/\-]\d{1,2}[/\-]\d{4}\b"
+    r"|\b\d{4}[/\-]\d{2}[/\-]\d{2}\b",
+)
+
+_SUFFIX_RE = re.compile(
+    r"(?P<num>\d+(?:[.,]\d+)?)\s*"
+    r"(?P<sfx>triệu|triêu\b|tr\b|[kKmM](?!\w))",
+    re.UNICODE,
+)
+
+_RANGE_SUFFIX_RE = re.compile(
+    r"(?P<n1>\d+(?:[.,]\d+)?)\s*[-–—~]\s*(?P<n2>\d+(?:[.,]\d+)?)\s*"
+    r"(?P<sfx>triệu|triêu\b|tr\b|[kKmMđ](?!\w))",
+    re.UNICODE,
+)
+
+
+def _detect_currency(text: str) -> str:
+    for pattern, code in _CURRENCY_DETECT:
+        if re.search(pattern, text, re.I):
+            return code
+    if re.search(r"\d\s*[kK]\b", text) and not re.search(
+            r"triệu|triêu|đồng|vnđ|vnd|\bđ\b", text, re.I):
+        return "USD"
+    return "VND"
+
+
+def _normalize_separators(text: str) -> str:
+    while re.search(r"\d\.\d{3}(?!\d)", text):
+        text = re.sub(r"(\d)\.(\d{3})(?!\d)", r"\1\2", text)
+    while re.search(r"\d,\d{3}(?!\d)", text):
+        text = re.sub(r"(\d),(\d{3})(?!\d)", r"\1\2", text)
+    text = text.replace(",", ".")
+    return text
+
+
+def _apply_suffix(num_str: str, sfx: str, currency: str) -> float:
+    val = float(num_str.replace(",", "."))
+    sfx_lower = sfx.lower()
+    if sfx_lower in ("triệu", "triêu", "tr", "m"):
+        return val * 1_000_000
+    if sfx_lower == "k":
+        return val * 1_000
+    return val
+
+
+def _extract_salary_numbers(text: str, currency: str) -> list[float]:
+    # Loại bỏ date patterns trước khi extract số
+    text = _DATE_PAT.sub(" ", text)
+    t = text.replace("~", "-").replace("–", "-").replace("—", "-")
+    t = _normalize_separators(t)
+
+    results: list[float] = []
+    consumed_spans: list[tuple[int, int]] = []
+
+    for m in _RANGE_SUFFIX_RE.finditer(t):
+        sfx = m.group("sfx")
+        for key in ("n1", "n2"):
+            val = _apply_suffix(m.group(key), sfx, currency)
+            results.append(val)
+        consumed_spans.append(m.span())
+
+    for m in _SUFFIX_RE.finditer(t):
+        s_pos, e_pos = m.span()
+        if any(cs <= s_pos < ce for cs, ce in consumed_spans):
+            continue
+        val = _apply_suffix(m.group("num"), m.group("sfx"), currency)
+        results.append(val)
+        consumed_spans.append((s_pos, e_pos))
+
+    for m in re.finditer(r"\d+(?:\.\d+)?", t):
+        s, e = m.span()
+        if any(cs <= s < ce for cs, ce in consumed_spans):
+            continue
+        val = float(m.group())
+        if currency == "VND" and val < 100:
+            continue
+        results.append(val)
+
+    return sorted(results)
+
+
+def _has_real_number(text: str) -> bool:
+    return bool(re.search(r"\d", text))
+
+
+def _split_main_bonus(text: str) -> str:
+    m = re.search(
+        r"(.*?\d.*?)(?:\.\s+[A-ZÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂĐ]|\n|;|,\s+(?:including|plus|with|and\s+(?:bonus|benefits?)))",
+        text, re.I | re.DOTALL,
+    )
+    return m.group(1) if m else text
+
+
+def _sanity_check(val: float | None, currency: str) -> float | None:
+    """Trả về None nếu giá trị nằm ngoài range hợp lý theo tháng."""
+    if val is None:
+        return val
+    lo, hi = _MONTHLY_SANITY.get(currency, (0, float("inf")))
+    if val < lo or val > hi:
+        return None
+    return val
+
+
 def parse_compensation(raw: str) -> dict:
     _base = {
         "salary_min":      None,
@@ -932,6 +1140,7 @@ def parse_compensation(raw: str) -> dict:
     s_main    = _split_main_bonus(s)
     text_main = s_main.lower()
 
+    # Negotiable check
     if any(kw in text for kw in _NEG_KW) and not _has_real_number(text_main):
         return _base
     if any(kw in text for kw in NEGOTIABLE_KW) and not _has_real_number(text_main):
@@ -939,26 +1148,43 @@ def parse_compensation(raw: str) -> dict:
 
     currency = _detect_currency(text)
     rate     = _CURRENCY_TABLE.get(currency, 1.0)
-    is_yearly = bool(_YEAR_RE.search(text))
 
+    # ── Detect period ────────────────────────────────────────────────────────
+    explicit_yearly  = bool(_YEAR_RE.search(text))
+    explicit_monthly = bool(_MONTH_RE.search(text))
+    explicit_hourly  = bool(_HOUR_RE.search(text))
+
+    if explicit_yearly and not explicit_monthly and not explicit_hourly:
+        period = "year"
+    elif explicit_hourly:
+        period = "hour"
+    else:
+        period = "month"  # default
+
+    # ── Extract numbers ──────────────────────────────────────────────────────
     nums = _extract_salary_numbers(text_main, currency)
     if not nums:
         nums = _extract_salary_numbers(text, currency)
     if not nums:
         return _base
 
+    # ── Loại bỏ salary_max = 0 (vietnamwork pattern) ────────────────────────
+    nums = [n for n in nums if n > 0]
+    if not nums:
+        return _base
+
     lo_kw = ["từ", "from", "trên", "hơn", "minimum", "tối thiểu", "at least",
              "ít nhất", "starting", "bắt đầu từ"]
     hi_kw = ["đến", "tới", "up to", "upto", "up-to", "dưới", "maximum", "tối đa",
-             "không quá", "tối đa"]
+             "không quá", "lên đến", "tới"]
 
     is_hi_only = any(kw in text_main for kw in hi_kw) or bool(
         re.search(r"\bupto\b|\bup[\s\-]+to\b", text_main))
-    is_lo_only = any(kw in text_main for kw in lo_kw)
+    is_lo_only = any(kw in text_main for kw in lo_kw) and not is_hi_only
 
     if len(nums) == 1:
         val = nums[0]
-        if is_lo_only and not is_hi_only:
+        if is_lo_only:
             sal_min, sal_max = val, None
         elif is_hi_only:
             sal_min, sal_max = None, val
@@ -967,14 +1193,46 @@ def parse_compensation(raw: str) -> dict:
     else:
         sal_min, sal_max = nums[0], nums[-1]
 
-    if is_yearly:
+    # ── Convert period → monthly ─────────────────────────────────────────────
+    if period == "year":
         if sal_min is not None:
             sal_min = round(sal_min / 12, 2)
         if sal_max is not None:
             sal_max = round(sal_max / 12, 2)
+    elif period == "hour":
+        # 1 tháng ≈ 160 giờ làm việc
+        if sal_min is not None:
+            sal_min = round(sal_min * 160, 2)
+        if sal_max is not None:
+            sal_max = round(sal_max * 160, 2)
 
+    # ── Sanity check — nếu số bất thường sau convert thì infer lại ──────────
+    lo_bound, hi_bound = _MONTHLY_SANITY.get(currency, (0, float("inf")))
+
+    # Nếu cả 2 đều nằm ngoài range → thử infer period
+    if period == "month":
+        if sal_min is not None and sal_min > hi_bound:
+            # Số quá lớn → có thể là annual chưa được tag
+            sal_min = round(sal_min / 12, 2)
+            if sal_max is not None:
+                sal_max = round(sal_max / 12, 2)
+        elif sal_max is not None and sal_max < lo_bound and sal_max > 0:
+            # Số quá nhỏ với VND → có thể đơn vị là nghìn
+            if currency == "VND" and sal_max < 10_000:
+                sal_min = round(sal_min * 1_000, 2) if sal_min else None
+                sal_max = round(sal_max * 1_000, 2)
+
+    # ── Final sanity — set None nếu vẫn bất thường ──────────────────────────
+    sal_min = _sanity_check(sal_min, currency)
+    sal_max = _sanity_check(sal_max, currency)
+
+    # Đảm bảo min <= max
     if sal_min is not None and sal_max is not None and sal_min > sal_max:
         sal_min, sal_max = sal_max, sal_min
+
+    # Nếu cả 2 đều None sau sanity → negotiable
+    if sal_min is None and sal_max is None:
+        return _base
 
     return {
         "salary_min":      int(sal_min) if sal_min is not None else None,
@@ -983,7 +1241,6 @@ def parse_compensation(raw: str) -> dict:
         "conversion_rate": rate,
         "is_negotiable":   0,
     }
-
 
 # ==============================================================================
 # 2.8 Experience
@@ -1566,7 +1823,6 @@ class RecruitmentETL:
                  fallback={"salary_min": None, "salary_max": None,
                            "salary_currency": None, "conversion_rate": None,
                            "is_negotiable": 1})
-
             _try("experience", parse_experience,
                  row["experience"], row["job_description"], row["job_requirement"],
                  fallback={"exp_min_yr": None, "exp_max_yr": None, "is_exp_required": None})
@@ -1678,17 +1934,26 @@ class RecruitmentETL:
 
         if not upd_df.empty:
             with self.engine.begin() as conn:
-                urls = upd_df["job_url"].tolist()
-                for i in range(0, len(urls), 500):
-                    batch = urls[i:i+500]
-                    ph    = ",".join([f":u{j}" for j in range(len(batch))])
+                pairs = list(zip(
+                    upd_df["job_url"].tolist(),
+                    upd_df["location_province"].fillna("Khác").tolist(),
+                ))
+                for i in range(0, len(pairs), 500):
+                    batch = pairs[i:i+500]
+                    conditions = " OR ".join(
+                        [f"(job_url = :u{j} AND location_province = :p{j})"
+                        for j in range(len(batch))]
+                    )
+                    params = {}
+                    for j, (url, prov) in enumerate(batch):
+                        params[f"u{j}"] = url
+                        params[f"p{j}"] = prov
                     conn.execute(
-                        sqlalchemy.text(f"DELETE FROM {FACT_TABLE} WHERE job_url IN ({ph})"),
-                        {f"u{j}": u for j, u in enumerate(batch)},
+                        sqlalchemy.text(f"DELETE FROM {FACT_TABLE} WHERE {conditions}"),
+                        params,
                     )
             _insert_chunk(upd_df)
             print(f"   🔄 UPDATE {len(upd_df):,} rows cũ.")
-
         return {"new": len(new_df), "updated": len(upd_df)}
 
     def _save_errors(self, ec: ErrorCollector, run_id: int):
