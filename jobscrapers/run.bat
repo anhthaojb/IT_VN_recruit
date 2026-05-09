@@ -2,6 +2,31 @@
 setlocal enabledelayedexpansion
 chcp 65001 >nul
 
+:: ============================
+::  KHOI DONG DOCKER + TYPESENSE
+:: ============================
+
+echo [Docker] Kiem tra Docker Desktop...
+docker info >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo [Docker] Dang khoi dong Docker Desktop...
+    start "" "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+    echo [Docker] Cho Docker khoi dong 30 giay...
+    timeout /t 30 /nobreak >nul
+)
+
+echo [Typesense] Khoi dong container...
+docker start typesense >nul 2>&1
+timeout /t 5 /nobreak >nul
+
+curl -s http://localhost:8108/health | findstr "ok" >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo [Typesense] WARN — Typesense chua san sang, cho them...
+    timeout /t 10 /nobreak >nul
+)
+
+echo [Typesense] San sang!
+
 set MODE=daily
 @REM set MODE=full
 set PYTHON=D:\ITTA\venv\Scripts\python.exe

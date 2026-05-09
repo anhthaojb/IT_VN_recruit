@@ -2,6 +2,7 @@ __pycache__/
 .venv/
 .env
 *.csv
+*.xlsx
 *.json
 *.jsonl
 *.log
@@ -15,3 +16,9 @@ test.ipynb
 *.ipynb
 *.svg
 *.sql
+company.py
+congbott.py
+daunet.py
+typesence.py
+company_stock.py
+masothue.py
