@@ -297,7 +297,7 @@ LEVEL_MAP: list[tuple[list[str], str]] = [
 
     # 3. Mid-level
     (["mid-level", "mid level", "middle", "intermediate"],
-     "Mid-level"),
+     "Middle"),
 
     # 4. Senior
     (["senior", "sr", "experienced", "chuyên gia", "chuyên viên cao cấp"],

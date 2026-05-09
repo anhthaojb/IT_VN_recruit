@@ -12,14 +12,26 @@
 #   python etl.py                    → xử lý jobs scraped hôm nay
 #   python etl.py --all              → xử lý toàn bộ bảng jobs
 #   python etl.py --date 2026-04-18  → ngày cụ thể
+#
+# Company match (gộp từ company.py):
+#   - Bidirectional fuzzy score (ratio + partial_ratio cả 2 chiều + token_sort)
+#   - Typesense 2 pass: prefix=true → infix fallback
+#   - type_penalty = 30 (không phải 100) để tránh bắn hết sang no_match
+#   - ok (score ≥ 85)     → UPDATE company_title_clean = tên chuẩn Typesense
+#   - review (65–84)      → giữ tên normalize, export Excel để xem lại
+#   - no_match (< 65)     → coi là tên mới, giữ nguyên
 # ==============================================================================
 
 import re
+import time
 import argparse
 import unicodedata
 import numpy as np
 import pandas as pd
 import sqlalchemy
+import typesense
+from rapidfuzz import fuzz as _fuzz
+from tqdm import tqdm
 from datetime import datetime, timedelta, date
 from lookups import (
     PROVINCE_CANONICAL, GEO_KEYS_SORTED, REGION_MAP,
@@ -31,7 +43,7 @@ from lookups import (
     COMPANY_TYPE_PATTERNS, COMPANY_TYPE_STRIP,
     JOB_CATEGORY_MAP, IT_TITLES,
     JOB_TITLE_MAP,
-    NON_IT_TITLE_MAP,           # <-- MỚI
+    NON_IT_TITLE_MAP,
     MAJOR_MAP,
     CERT_KW, LANG_CERT_TO_LANG,
     SKILL_MAP,
@@ -42,6 +54,7 @@ from lookups import (
 # ==============================================================================
 # 0. CONFIG
 # ==============================================================================
+
 import os
 
 DATABASE_URL = os.environ.get(
@@ -52,6 +65,148 @@ SRC_TABLE   = "jobs"
 FACT_TABLE  = "fact_jobs_etl"
 LOG_TABLE   = "fact_etl_log"
 ERROR_TABLE = "fact_etl_error"
+
+TS_CONFIG = {
+    "host":    "localhost",
+    "port":    "8108",
+    "api_key": "changeme123",
+    "timeout": 3,
+}
+
+# ==============================================================================
+# 0.5 COMPANY NORMALIZE — dùng chung cho parse_company_title & match
+# ==============================================================================
+
+_COMPANY_TYPE_NORMALIZE = [
+    (r'\bTNHH\s+MTV\b',                            'Công ty TNHH MTV'),
+    (r'\bCông\s+ty\s+TNHH\s+Một\s+thành\s+viên\b', 'Công ty TNHH MTV'),
+    (r'\bCty\s+TNHH\s+MTV\b',                      'Công ty TNHH MTV'),
+    (r'\bCty\s+TNHH\b',                            'Công ty TNHH'),
+    (r'\bCông\s+ty\s+Trách\s+nhiệm\s+hữu\s+hạn\b', 'Công ty TNHH'),
+    (r'\bCTCP\b',                                  'Công ty Cổ phần'),
+    (r'\bCty\s+CP\b',                              'Công ty Cổ phần'),
+    (r'\bCông\s+ty\s+CP\b',                        'Công ty Cổ phần'),
+    (r'\bCty\s+Cổ\s+phần\b',                       'Công ty Cổ phần'),
+    (r'\bJSC\b',                                   'Công ty Cổ phần'),
+    (r'\bDNTN\b',                                  'Doanh nghiệp Tư nhân'),
+    (r'\bDoanh\s+nghiệp\s+TN\b',                   'Doanh nghiệp Tư nhân'),
+    (r'\bTĐ\b',                                    'Tập đoàn'),
+]
+
+# Rules detect loại hình — dùng cho cả parse và match scoring
+_COMPANY_TYPE_RULES_MATCH = [
+    (r'\bCông\s+ty\s+Cổ\s+phần\b',      'Cổ phần'),
+    (r'\bTrách\s+nhiệm\s+hữu\s+hạn\b',  'TNHH'),
+    (r'\bMột\s+thành\s+viên\b',          'TNHH MTV'),
+    (r'\bDoanh\s+nghiệp\s+Tư\s+nhân\b', 'Tư nhân'),
+    (r'\bTập\s+đoàn\b',                  'Tập đoàn'),
+    (r'\bCTCP\b|\bCty\s+CP\b|\bJSC\b',  'Cổ phần'),
+    (r'\bTNHH\b|\bLtd\b|\bLLC\b',        'TNHH'),
+    (r'\bMTV\b',                         'TNHH MTV'),
+]
+
+# Noise words cần strip trước khi gửi lên Typesense
+_COMPANY_SEARCH_NOISE = [
+    r'\bCông\s+ty\b', r'\bCty\b', r'\bViệt\s+Nam\b', r'\bVN\b', r'\bVietnam\b',
+    r'\bTNHH\b', r'\bCổ\s+phần\b', r'\bCP\b', r'\bMTV\b',
+]
+
+
+def _normalize_company_name(name: str) -> str:
+    """Chuẩn hoá prefix pháp lý, giữ nguyên tên thương hiệu.
+    'CTCP Vinamilk' → 'Công ty Cổ phần Vinamilk'
+    """
+    result = (name or "").strip()
+    for pattern, replacement in _COMPANY_TYPE_NORMALIZE:
+        result, n = re.subn(pattern, replacement, result, flags=re.IGNORECASE)
+        if n:
+            break
+    return result
+
+
+def _match_clean_for_search(name: str) -> str:
+    """Strip noise words, lowercase, collapse spaces — dùng làm query Typesense."""
+    res = name.lower()
+    for pat in _COMPANY_SEARCH_NOISE:
+        res = re.sub(pat, ' ', res, flags=re.IGNORECASE)
+    res = re.sub(r'[^\w\s]', ' ', res)
+    return re.sub(r'\s+', ' ', res).strip()
+
+
+def _match_get_type(name: str) -> str | None:
+    """Trả về loại hình công ty từ tên, hoặc None nếu không xác định."""
+    for pattern, ctype in _COMPANY_TYPE_RULES_MATCH:
+        if re.search(pattern, name, flags=re.IGNORECASE):
+            return ctype
+    return None
+
+
+def _match_search_typesense(ts, name_clean: str,
+                             retries: int = 1, delay: float = 0.5) -> list:
+    """
+    2-pass Typesense search:
+      Pass 1: prefix=true  → ưu tiên khớp từ trái sang phải
+      Pass 2: prefix=false → infix fallback nếu pass 1 trống
+    """
+    params_prefix = {
+        'q': name_clean, 'query_by': 'name_official',
+        'per_page': 10, 'prefix': 'true', 'sort_by': '_text_match:desc',
+    }
+    params_infix = {
+        'q': name_clean, 'query_by': 'name_official',
+        'per_page': 10, 'prefix': 'false', 'sort_by': '_text_match:desc',
+    }
+    last_err = None
+    for attempt in range(retries):
+        try:
+            res  = ts.collections['companies'].documents.search(params_prefix)
+            hits = res.get('hits', [])
+            if hits:
+                return hits
+            res2 = ts.collections['companies'].documents.search(params_infix)
+            return res2.get('hits', [])
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(delay * (attempt + 1))
+    raise last_err
+
+
+def _bidirectional_score(name_a: str, name_b: str) -> tuple[int, int, str]:
+    """
+    Score tương đồng hai chiều:
+      max(ratio, partial_ratio a→b, partial_ratio b→a, token_sort_ratio) + prefix_bonus
+
+    prefix_bonus:
+      +30 nếu cả 2 chiều đều là prefix của nhau (bằng nhau)
+      +15 nếu 1 chiều
+      -20 nếu không chiều nào
+
+    Trả về: (raw_ratio, prefix_bonus, note)
+    """
+    a = name_a.lower().strip()
+    b = name_b.lower().strip()
+
+    r_full    = _fuzz.ratio(a, b)
+    r_ab      = _fuzz.partial_ratio(a, b)
+    r_ba      = _fuzz.partial_ratio(b, a)
+    r_sort    = _fuzz.token_sort_ratio(a, b)
+    raw_ratio = max(r_full, r_ab, r_ba, r_sort)
+
+    a_prefix_b = b.startswith(a)
+    b_prefix_a = a.startswith(b)
+
+    if a_prefix_b and b_prefix_a:
+        prefix_bonus, note = 30, 'Khớp prefix 2 chiều'
+    elif a_prefix_b:
+        prefix_bonus, note = 15, 'A là prefix của B'
+    elif b_prefix_a:
+        prefix_bonus, note = 15, 'B là prefix của A'
+    else:
+        prefix_bonus, note = -20, 'Không khớp prefix'
+
+    return raw_ratio, prefix_bonus, note
+
 
 # ==============================================================================
 # 1. DDL
@@ -73,7 +228,7 @@ CREATE TABLE IF NOT EXISTS {FACT_TABLE} (
     job_deadline_clean      DATE,
     job_title               TEXT,
     job_title_clean         VARCHAR(150),
-    job_title_detect  VARCHAR(150),
+    job_title_detect        VARCHAR(150),
     job_category_clean      VARCHAR(100),
     is_it                   TINYINT(1),
     company_title           VARCHAR(255),
@@ -199,7 +354,6 @@ def _to_date(text: str, ref_iso: str) -> date | None:
     if not s:
         return None
 
-    # DD/MM/YYYY hoặc DD-MM-YYYY
     m = re.match(r"(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})", s)
     if m:
         try:
@@ -207,7 +361,6 @@ def _to_date(text: str, ref_iso: str) -> date | None:
         except ValueError:
             pass
 
-    # YYYY-MM-DD hoặc YYYY/MM/DD
     m = re.match(r"(\d{4})[/\-](\d{2})[/\-](\d{2})", s)
     if m:
         try:
@@ -215,7 +368,6 @@ def _to_date(text: str, ref_iso: str) -> date | None:
         except ValueError:
             pass
 
-    # "còn N ngày"
     m = re.search(r"còn\s+(\d+)\s+ngày", s)
     if m:
         try:
@@ -224,7 +376,6 @@ def _to_date(text: str, ref_iso: str) -> date | None:
         except Exception:
             pass
 
-    # "N unit ago"
     m = re.search(r"(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago", s)
     if m:
         try:
@@ -287,7 +438,7 @@ _IT_EXTRA_KW: list[str] = [
     "salesforce", "figma", "ui/ux", "power bi", "tableau",
     "looker", "bigquery",
 ]
- 
+
 _IT_TITLE_KW_FALLBACK: list[str] = [
     "software", "developer", "engineer", "programmer", "coder",
     "data", "ai ", "machine learning", "deep learning", "ml ",
@@ -299,7 +450,7 @@ _IT_TITLE_KW_FALLBACK: list[str] = [
     "product manager", "product owner", "technical",
     "blockchain", "iot", "embedded", "firmware",
 ]
- 
+
 _TITLE_NOISE_PATTERNS = [
     r"\btuyển\s*(gấp|dụng)?\b",
     r"\bgấp\b",
@@ -324,47 +475,32 @@ _TITLE_NOISE_PATTERNS = [
     r"\[.*?\]",
     r"\(.*?\)",
 ]
- 
+
 _TITLE_NOISE_RES = [re.compile(p, re.IGNORECASE | re.UNICODE)
                     for p in _TITLE_NOISE_PATTERNS]
- 
- 
+
+
 def _clean_job_title(raw: str) -> str:
-    """
-    Bước 1: Làm sạch raw title — xoá noise, giữ phần có nghĩa.
-    KHÔNG xoá tech keyword (vẫn cần cho detection ở bước 2).
-    """
     s = _s(raw).strip()
     if not s:
         return ""
     for noise_re in _TITLE_NOISE_RES:
         s = noise_re.sub(" ", s)
-    # Xoá dấu câu thừa đầu / cuối
     s = re.sub(r"[-–—,;/|_]+$", "", s)
     s = re.sub(r"^[-–—,;/|_]+", "", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
- 
- 
+
+
 def _detect_job_title(clean_title: str) -> str | None:
-    """
-    Bước 2: Map cleaned title → standard English title.
-    Thứ tự ưu tiên:
-      1. JOB_TITLE_MAP     (IT standard)
-      2. Role+Domain infer (IT infer)
-      3. NON_IT_TITLE_MAP  (Non-IT standard)
-    """
     if not clean_title:
         return None
- 
     text = clean_title.lower()
- 
-    # Pass 1 — JOB_TITLE_MAP exact keyword match
+
     for std_title, kws in JOB_TITLE_MAP.items():
         if any(k in text for k in kws):
             return std_title
- 
-    # Pass 2 — Role + Domain inference
+
     role   = next((v for k, v in ROLE_WORDS.items()  if k in text), None)
     domain = next((v for k, v in TECH_DOMAIN.items() if k in text), None)
     if role:
@@ -374,50 +510,29 @@ def _detect_job_title(clean_title: str) -> str | None:
         )
         if inferred:
             return inferred
- 
-    # Pass 3 — NON_IT_TITLE_MAP
+
     for kws, en_title in NON_IT_TITLE_MAP:
         if any(k in text for k in kws):
             return en_title
- 
+
     return None
- 
- 
+
+
 def _has_it_signal(text: str) -> bool:
-    """Kiểm tra xem title có chứa IT keyword hay không (dùng khi detect = None)."""
     return (
         any(k in text for k in TECH_DOMAIN)
         or any(k in text for k in _IT_TITLE_KW_FALLBACK)
         or any(k in text for k in _IT_EXTRA_KW)
     )
- 
- 
+
+
 def parse_job_title(raw: str, job_category_raw: str = "") -> dict:
-    """
-    Trả về 4 trường:
- 
-    job_title_clean   — raw title đã strip noise (giữ tech keyword)
-    job_title_detect  — standard English title từ lookup (None nếu không map được)
-    job_category_clean— IT category / "IT - Khác" / "Non-IT"
-    is_it             — 1 / 0
- 
-    Phân loại theo thứ tự:
-      A. detected ∈ IT_TITLES              → is_it=1, category = JOB_CATEGORY_MAP[detected]
-      B. detected ∈ JOB_CATEGORY_MAP       → is_it=0, category = JOB_CATEGORY_MAP[detected]
-         (ví dụ: Designer → "Designing", không phải IT)
-      C. detected = None + có IT signal    → is_it=1, category = "IT - Khác"
-      D. detected = None + không IT signal → is_it=0, category = "Non-IT"
-    """
     raw_s   = _s(raw)
     cleaned = _clean_job_title(raw_s)
- 
-    # Detection chạy trên cleaned; fallback sang raw nếu cleaned rỗng
     detected = _detect_job_title(cleaned) or _detect_job_title(raw_s)
- 
-    # ── Phân loại ────────────────────────────────────────────────────────────
+
     if detected is not None:
         if detected in IT_TITLES:
-            # Case A — IT có trong lookup
             return {
                 "job_title_clean":    cleaned or raw_s,
                 "job_title_detect":   detected,
@@ -425,7 +540,6 @@ def parse_job_title(raw: str, job_category_raw: str = "") -> dict:
                 "is_it":              1,
             }
         elif detected in JOB_CATEGORY_MAP:
-            # Case B — có trong JOB_TITLE_MAP nhưng không phải IT (Designer…)
             return {
                 "job_title_clean":    cleaned or raw_s,
                 "job_title_detect":   detected,
@@ -433,40 +547,34 @@ def parse_job_title(raw: str, job_category_raw: str = "") -> dict:
                 "is_it":              0,
             }
         else:
-            # detected đến từ NON_IT_TITLE_MAP → Non-IT
             return {
                 "job_title_clean":    cleaned or raw_s,
                 "job_title_detect":   detected,
                 "job_category_clean": "Non-IT",
                 "is_it":              0,
             }
- 
-    # ── Không map được — dùng IT signal để phân biệt ────────────────────────
+
     text = (cleaned or raw_s).lower()
     if _has_it_signal(text):
-        # Case C — IT nhưng không có mapping chuẩn
         return {
             "job_title_clean":    cleaned or raw_s,
             "job_title_detect":   None,
             "job_category_clean": "IT - Khác",
             "is_it":              1,
         }
- 
-    # Case D — thuần Non-IT, không map được
+
     return {
         "job_title_clean":    cleaned or raw_s,
         "job_title_detect":   None,
         "job_category_clean": "Non-IT",
         "is_it":              0,
     }
- 
- 
+
 
 # ==============================================================================
 # 2.4 Company title
 # ==============================================================================
 
-# Hậu tố pháp lý / ngành / địa danh cần strip (dài → ngắn)
 _LEGAL_STRIP_RE = re.compile(
     r'\b('
     r'tổng\s+công\s+ty'
@@ -497,10 +605,7 @@ _LEGAL_STRIP_RE = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 
-_DASH_NOISE_RE = re.compile(
-    r'\s*(?:[-–—|])\s*(?=\S{20,}|\w[\w\s]{15,})',
-    re.UNICODE,
-)
+_DASH_NOISE_RE  = re.compile(r'\s*(?:[-–—|])\s*(?=\S{20,}|\w[\w\s]{15,})', re.UNICODE)
 _PAREN_NOISE_RE = re.compile(r'\([^)]{0,40}\)', re.UNICODE)
 
 _COMPANY_NOISE = re.compile(
@@ -559,63 +664,36 @@ _SYNONYM_MAP = [
     (re.compile(r'\bbenh\s+vien\b',      re.I), 'hospital'),
     (re.compile(r'\bso\s+giao\s+duc\b',  re.I), 'education_dept'),
 ]
+
 _ABBREV_WHITELIST = {
-    'ghn': 'giao hang nhanh',
-    'ghtk': 'giao hang tiet kiem',
-    'jt': 'j&t express',
-    'ems': 'chuyen phat nhanh buu dien',
-    'vcb': 'vietcombank',
-    'tcb': 'techcombank',
-    'acb': 'a chau bank',
-    'bidv': 'dau tu va phat trien viet nam bank',
-    'vib': 'quoc te bank',
-    'msb': 'hang hai bank',
-    'vpbank': 'viet nam thinh vuong bank',
-    'mb': 'quan doi bank',
-    'mbb': 'quan doi bank',
-    'stb': 'sai gon thuong tin bank',
-    'sacombank': 'sai gon thuong tin bank',
-    'tpbank': 'tien phong bank',
-    'lpb': 'loc phat viet nam bank',
-    'lpbank': 'loc phat viet nam bank',
-    'pvcombank': 'dai chung viet nam bank',
+    'ghn': 'giao hang nhanh', 'ghtk': 'giao hang tiet kiem',
+    'jt': 'j&t express', 'ems': 'chuyen phat nhanh buu dien',
+    'vcb': 'vietcombank', 'tcb': 'techcombank', 'acb': 'a chau bank',
+    'bidv': 'dau tu va phat trien viet nam bank', 'vib': 'quoc te bank',
+    'msb': 'hang hai bank', 'vpbank': 'viet nam thinh vuong bank',
+    'mb': 'quan doi bank', 'mbb': 'quan doi bank',
+    'stb': 'sai gon thuong tin bank', 'sacombank': 'sai gon thuong tin bank',
+    'tpbank': 'tien phong bank', 'lpb': 'loc phat viet nam bank',
+    'lpbank': 'loc phat viet nam bank', 'pvcombank': 'dai chung viet nam bank',
     'vbsp': 'chinh sach xa hoi bank',
     'agribank': 'nong nghiep va phat trien nong thon bank',
     'hdb': 'phat trien thanh pho ho chi minh bank',
     'hdbank': 'phat trien thanh pho ho chi minh bank',
-    'shb': 'sai gon ha noi bank',
-    'ocb': 'phuong dong bank',
-    'vbb': 'viet nam thuong tin bank',
-    'vietbank': 'viet nam thuong tin bank',
-    'abb': 'an binh bank',
-    'abbank': 'an binh bank',
-    'bab': 'bac a bank',
+    'shb': 'sai gon ha noi bank', 'ocb': 'phuong dong bank',
+    'vbb': 'viet nam thuong tin bank', 'vietbank': 'viet nam thuong tin bank',
+    'abb': 'an binh bank', 'abbank': 'an binh bank', 'bab': 'bac a bank',
     'vpb': 'viet nam thinh vuong bank',
     'vnpt': 'buu chinh vien thong viet nam',
     'viettel': 'vien thong quan doi viettel',
-    'momo': 'truyen thong truc tuyen momo',
-    'vng': 'cong nghe vng',
-    'fpt': 'fpt technology',
-    'cmc': 'cong nghe cmc',
-    'hcl': 'hcl technologies',
-    'tma': 'tma solutions',
-    'vti': 'vti cloud technology',
-    'kms': 'kms technology',
-    'vnm': 'vinamilk',
-    'mwg': 'the gioi di dong',
-    'pnj': 'vàng bac da quy phu nhuan',
-    'vic': 'vingroup',
-    'vhm': 'vinhomes',
-    'vre': 'vincom retail',
-    'msn': 'masan group',
-    'hpg': 'hoa phat group',
-    'fss': 'financial software solutions',
-    'ssi': 'chung khoan ssi',
-    'vps': 'chung khoan vps',
-    'pvi': 'bao hiem dau khi',
-    'bv': 'bao viet',
-    'bhv': 'bao viet',
-    'prudential': 'bao hiem prudential',
+    'momo': 'truyen thong truc tuyen momo', 'vng': 'cong nghe vng',
+    'fpt': 'fpt technology', 'cmc': 'cong nghe cmc', 'hcl': 'hcl technologies',
+    'tma': 'tma solutions', 'vti': 'vti cloud technology', 'kms': 'kms technology',
+    'vnm': 'vinamilk', 'mwg': 'the gioi di dong',
+    'pnj': 'vàng bac da quy phu nhuan', 'vic': 'vingroup', 'vhm': 'vinhomes',
+    'vre': 'vincom retail', 'msn': 'masan group', 'hpg': 'hoa phat group',
+    'fss': 'financial software solutions', 'ssi': 'chung khoan ssi',
+    'vps': 'chung khoan vps', 'pvi': 'bao hiem dau khi', 'bv': 'bao viet',
+    'bhv': 'bao viet', 'prudential': 'bao hiem prudential',
     'manulife': 'bao hiem manulife',
 }
 
@@ -656,8 +734,11 @@ def _build_canonical_key(raw_clean: str) -> str:
 
 def parse_company_title(raw: str) -> dict:
     if not raw:
-        return {'company_title_clean': None, 'company_type': None,
-                'company_canonical_key': None}
+        return {
+            'company_title_clean':   None,
+            'company_type':          None,
+            'company_canonical_key': None,
+        }
 
     s  = str(raw).strip()
     sl = s.lower()
@@ -675,23 +756,11 @@ def parse_company_title(raw: str) -> dict:
             company_type = ctype
             break
 
-    cleaned = _DASH_NOISE_RE.split(s)[0].strip()
-    cleaned = _PAREN_NOISE_RE.sub(' ', cleaned)
-    cleaned = _COMPANY_NOISE.sub('', cleaned)
-
-    cleaned_stripped_vn = _VN_SUFFIX_RE.sub(' ', cleaned).strip()
-    if len(cleaned_stripped_vn.strip()) >= 3:
-        cleaned = cleaned_stripped_vn
-
-    cleaned = re.sub(r'[,.\-–—]+$', '', cleaned).strip()
-    cleaned = re.sub(r'^[,.\-–—]+', '', cleaned).strip()
-    cleaned = re.sub(r'\s{2,}', ' ', cleaned).strip()
-    cleaned = cleaned.upper() if cleaned else None
-
-    canonical = _build_canonical_key(cleaned or s)
+    normalized = _normalize_company_name(s)
+    canonical  = _build_canonical_key(normalized)
 
     return {
-        'company_title_clean':   cleaned,
+        'company_title_clean':   normalized or s,
         'company_type':          company_type or 'Khác',
         'company_canonical_key': canonical or None,
     }
@@ -714,11 +783,6 @@ def _resolve_province(raw: str) -> tuple[str | None, str]:
 
 
 def parse_location(raw: str) -> list[dict]:
-    """
-    Whitelist-based: chỉ những địa điểm map được vào PROVINCE_CANONICAL
-    mới là is_vn=1. Không nhận ra → is_vn=0, không dùng FOREIGN_KW
-    để tránh false positive (vd: "Thanh Hóa" bị match "anh").
-    """
     if not raw:
         return [{"location_province": "Khác", "location_region": "Khác", "is_vn": 0}]
 
@@ -746,14 +810,12 @@ def parse_location(raw: str) -> list[dict]:
             seen_provinces.add(province)
 
         if province:
-            # Map được → chắc chắn Việt Nam
             result.append({
                 "location_province": province,
                 "location_region":   region,
                 "is_vn":             1,
             })
         else:
-            # Không map được → không xác định (nước ngoài hoặc địa chỉ lạ)
             result.append({
                 "location_province": "Khác",
                 "location_region":   "Khác",
@@ -791,174 +853,10 @@ def parse_work_style(job_type_raw: str, work_mode_raw: str, job_desc: str) -> di
 # ==============================================================================
 
 _CURRENCY_TABLE: dict[str, float] = {
-    "USD": 25_500.0,
-    "VND": 1.0,
-    "JPY": 168.0,
-    "EUR": 27_500.0,
-    "SGD": 19_000.0,
-    "GBP": 32_000.0,
-    "AUD": 16_500.0,
-    "CAD": 18_500.0,
-    "KRW": 18.5,
-    "CNY": 3_500.0,
-    "THB": 700.0,
-}
-
-_CURRENCY_DETECT: list[tuple[str, str]] = [
-    (r"\$|usd|\bđô\b|dollar",                "USD"),
-    (r"vnđ|vnd|đ(?!ồng)|đồng|triệu|triêu|nghìn\s*đ|ngàn\s*đ", "VND"),
-    (r"\bjpy\b|¥|yen",                        "JPY"),
-    (r"\beur\b|€|euro",                       "EUR"),
-    (r"\bsgd\b|s\$",                          "SGD"),
-    (r"\bgbp\b|£|pound",                      "GBP"),
-    (r"\baud\b|a\$",                          "AUD"),
-    (r"\bcad\b|ca\$",                         "CAD"),
-    (r"\bkrw\b|₩|won",                        "KRW"),
-    (r"\bcny\b|rmb|yuan",                     "CNY"),
-    (r"\bthb\b|฿|baht",                       "THB"),
-]
-
-_NEG_KW: list[str] = [
-    "thỏa thuận", "thương lượng", "competitive", "negotiable",
-    "attractive", "market rate", "commensurate", "tbd", "t.b.d",
-    "to be discussed", "to be confirmed", "sẽ thảo luận",
-]
-
-_SUFFIX_RE = re.compile(
-    r"(?P<num>\d+(?:[.,]\d+)?)\s*"
-    r"(?P<sfx>triệu|triêu\b|tr\b|[kKmM](?!\w))",
-    re.UNICODE,
-)
-
-_RANGE_SUFFIX_RE = re.compile(
-    r"(?P<n1>\d+(?:[.,]\d+)?)\s*[-–—~]\s*(?P<n2>\d+(?:[.,]\d+)?)\s*"
-    r"(?P<sfx>triệu|triêu\b|tr\b|[kKmMđ](?!\w))",
-    re.UNICODE,
-)
-
-# Thay _YEAR_RE cũ (chỉ bắt /năm) bằng version mở rộng hơn
-_YEAR_RE = re.compile(
-    r"/\s*year|per\s+year|/\s*yr|/\s*năm|/\s*annum"
-    r"|annually|hàng\s*năm|mỗi\s*năm"
-    r"|\bpa\b|\bp\.a\b",           # "pa" / "p.a" = per annum
-    re.I,
-)
-
-_MONTH_RE = re.compile(
-    r"/\s*month|per\s+month|/\s*tháng|/\s*mo\b"
-    r"|hàng\s*tháng|mỗi\s*tháng",
-    re.I,
-)
-
-# # Ngưỡng phát hiện lương theo năm (khi không có signal rõ ràng)
-# # VND > 100M/năm hoặc USD > 10K/năm thì mới tin là "theo năm"
-# _ANNUAL_THRESHOLD: dict[str, float] = {
-#     "VND": 100_000_000,
-#     "USD": 10_000,
-#     "JPY": 1_200_000,
-#     "EUR": 12_000,
-#     "SGD": 12_000,
-#     "GBP": 10_000,
-# }
-
-# # Các site mặc định đăng lương THEO NĂM
-# _ANNUAL_DEFAULT_SITES: set[str] = {
-#     "vietnamwork",
-#     "linkedin",         # LinkedIn thường dùng annual
-# }
-
-
-def _detect_currency(text: str) -> str:
-    for pattern, code in _CURRENCY_DETECT:
-        if re.search(pattern, text, re.I):
-            return code
-    if re.search(r"\d\s*[kK]\b", text) and not re.search(
-            r"triệu|triêu|đồng|vnđ|vnd|\bđ\b", text, re.I):
-        return "USD"
-    return "VND"
-
-
-def _normalize_separators(text: str) -> str:
-    while re.search(r"\d\.\d{3}(?!\d)", text):
-        text = re.sub(r"(\d)\.(\d{3})(?!\d)", r"\1\2", text)
-    while re.search(r"\d,\d{3}(?!\d)", text):
-        text = re.sub(r"(\d),(\d{3})(?!\d)", r"\1\2", text)
-    text = text.replace(",", ".")
-    return text
-
-
-def _apply_suffix(num_str: str, sfx: str, currency: str) -> float:
-    val = float(num_str.replace(",", "."))
-    sfx_lower = sfx.lower()
-    if sfx_lower in ("triệu", "triêu", "tr", "m"):
-        return val * 1_000_000
-    if sfx_lower == "k":
-        return val * 1_000
-    return val
-
-
-def _extract_salary_numbers(text: str, currency: str) -> list[float]:
-    t = text.replace("~", "-").replace("–", "-").replace("—", "-")
-    t = _normalize_separators(t)
-
-    results: list[float] = []
-    consumed_spans: list[tuple[int, int]] = []
-
-    for m in _RANGE_SUFFIX_RE.finditer(t):
-        sfx = m.group("sfx")
-        for key in ("n1", "n2"):
-            val = _apply_suffix(m.group(key), sfx, currency)
-            results.append(val)
-        consumed_spans.append(m.span())
-
-    for m in _SUFFIX_RE.finditer(t):
-        s_pos, e_pos = m.span()
-        if any(cs <= s_pos < ce for cs, ce in consumed_spans):
-            continue
-        val = _apply_suffix(m.group("num"), m.group("sfx"), currency)
-        results.append(val)
-        consumed_spans.append((s_pos, e_pos))
-
-    for m in re.finditer(r"\d+(?:\.\d+)?", t):
-        s, e = m.span()
-        if any(cs <= s < ce for cs, ce in consumed_spans):
-            continue
-        val = float(m.group())
-        if currency == "VND" and val < 100:
-            continue
-        results.append(val)
-
-    return sorted(results)
-
-
-def _has_real_number(text: str) -> bool:
-    return bool(re.search(r"\d", text))
-
-
-def _split_main_bonus(text: str) -> str:
-    m = re.search(
-        r"(.*?\d.*?)(?:\.\s+[A-ZÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂĐ]|\n|;|,\s+(?:including|plus|with|and\s+(?:bonus|benefits?)))",
-        text, re.I | re.DOTALL,
-    )
-    return m.group(1) if m else text
-
-
-# ==============================================================================
-# 2.7 Compensation — rewrite triệt để
-# ==============================================================================
-
-_CURRENCY_TABLE: dict[str, float] = {
-    "USD": 25_500.0,
-    "VND": 1.0,
-    "JPY": 168.0,
-    "EUR": 27_500.0,
-    "SGD": 19_000.0,
-    "GBP": 32_000.0,
-    "AUD": 16_500.0,
-    "CAD": 18_500.0,
-    "KRW": 18.5,
-    "CNY": 3_500.0,
-    "THB": 700.0,
+    "USD": 25_500.0, "VND": 1.0,     "JPY": 168.0,
+    "EUR": 27_500.0, "SGD": 19_000.0, "GBP": 32_000.0,
+    "AUD": 16_500.0, "CAD": 18_500.0, "KRW": 18.5,
+    "CNY": 3_500.0,  "THB": 700.0,
 }
 
 _CURRENCY_DETECT: list[tuple[str, str]] = [
@@ -983,52 +881,37 @@ _NEG_KW: list[str] = [
 
 _YEAR_RE = re.compile(
     r"/\s*year|per\s+year|/\s*yr|/\s*năm|/\s*annum"
-    r"|annually|hàng\s*năm|mỗi\s*năm|\bpa\b|\bp\.a\b",
-    re.I,
+    r"|annually|hàng\s*năm|mỗi\s*năm|\bpa\b|\bp\.a\b", re.I,
 )
 _MONTH_RE = re.compile(
-    r"/\s*month|per\s+month|/\s*tháng|/\s*mo\b"
-    r"|hàng\s*tháng|mỗi\s*tháng",
-    re.I,
+    r"/\s*month|per\s+month|/\s*tháng|/\s*mo\b|hàng\s*tháng|mỗi\s*tháng", re.I,
 )
 _HOUR_RE = re.compile(
-    r"/\s*hour|per\s+hour|/\s*hr\b|/\s*giờ|\bphp\b",
-    re.I,
+    r"/\s*hour|per\s+hour|/\s*hr\b|/\s*giờ|\bphp\b", re.I,
 )
 
-# Sanity range (min, max) hợp lý theo tháng cho từng currency
 _MONTHLY_SANITY: dict[str, tuple[float, float]] = {
-    "USD": (50,     50_000),
+    "USD": (50,      50_000),
     "VND": (500_000, 500_000_000),
     "JPY": (50_000,  5_000_000),
-    "EUR": (500,    30_000),
-    "SGD": (500,    30_000),
-    "GBP": (500,    30_000),
-    "AUD": (500,    30_000),
-    "CAD": (500,    30_000),
+    "EUR": (500,     30_000),
+    "SGD": (500,     30_000),
+    "GBP": (500,     30_000),
+    "AUD": (500,     30_000),
+    "CAD": (500,     30_000),
     "KRW": (500_000, 50_000_000),
-    "CNY": (1_000,  200_000),
-    "THB": (5_000,  500_000),
+    "CNY": (1_000,   200_000),
+    "THB": (5_000,   500_000),
 }
 
-# Nếu số < ngưỡng này → có thể đang ở đơn vị nhỏ hơn (vd VND đang là triệu)
-_UNIT_MULTIPLIER_THRESHOLD: dict[str, float] = {
-    "VND": 100_000,   # < 100k → likely in triệu → × 1_000_000... nhưng
-                      # thực ra "300 VND" có thể là 300k → × 1000
-}
-
-# Pattern ngày tháng — tránh parse "31/05/2026" thành salary
 _DATE_PAT = re.compile(
-    r"\b\d{1,2}[/\-]\d{1,2}[/\-]\d{4}\b"
-    r"|\b\d{4}[/\-]\d{2}[/\-]\d{2}\b",
+    r"\b\d{1,2}[/\-]\d{1,2}[/\-]\d{4}\b|\b\d{4}[/\-]\d{2}[/\-]\d{2}\b",
 )
 
 _SUFFIX_RE = re.compile(
-    r"(?P<num>\d+(?:[.,]\d+)?)\s*"
-    r"(?P<sfx>triệu|triêu\b|tr\b|[kKmM](?!\w))",
+    r"(?P<num>\d+(?:[.,]\d+)?)\s*(?P<sfx>triệu|triêu\b|tr\b|[kKmM](?!\w))",
     re.UNICODE,
 )
-
 _RANGE_SUFFIX_RE = re.compile(
     r"(?P<n1>\d+(?:[.,]\d+)?)\s*[-–—~]\s*(?P<n2>\d+(?:[.,]\d+)?)\s*"
     r"(?P<sfx>triệu|triêu\b|tr\b|[kKmMđ](?!\w))",
@@ -1066,7 +949,6 @@ def _apply_suffix(num_str: str, sfx: str, currency: str) -> float:
 
 
 def _extract_salary_numbers(text: str, currency: str) -> list[float]:
-    # Loại bỏ date patterns trước khi extract số
     text = _DATE_PAT.sub(" ", text)
     t = text.replace("~", "-").replace("–", "-").replace("—", "-")
     t = _normalize_separators(t)
@@ -1114,7 +996,6 @@ def _split_main_bonus(text: str) -> str:
 
 
 def _sanity_check(val: float | None, currency: str) -> float | None:
-    """Trả về None nếu giá trị nằm ngoài range hợp lý theo tháng."""
     if val is None:
         return val
     lo, hi = _MONTHLY_SANITY.get(currency, (0, float("inf")))
@@ -1140,7 +1021,6 @@ def parse_compensation(raw: str) -> dict:
     s_main    = _split_main_bonus(s)
     text_main = s_main.lower()
 
-    # Negotiable check
     if any(kw in text for kw in _NEG_KW) and not _has_real_number(text_main):
         return _base
     if any(kw in text for kw in NEGOTIABLE_KW) and not _has_real_number(text_main):
@@ -1149,7 +1029,6 @@ def parse_compensation(raw: str) -> dict:
     currency = _detect_currency(text)
     rate     = _CURRENCY_TABLE.get(currency, 1.0)
 
-    # ── Detect period ────────────────────────────────────────────────────────
     explicit_yearly  = bool(_YEAR_RE.search(text))
     explicit_monthly = bool(_MONTH_RE.search(text))
     explicit_hourly  = bool(_HOUR_RE.search(text))
@@ -1159,16 +1038,14 @@ def parse_compensation(raw: str) -> dict:
     elif explicit_hourly:
         period = "hour"
     else:
-        period = "month"  # default
+        period = "month"
 
-    # ── Extract numbers ──────────────────────────────────────────────────────
     nums = _extract_salary_numbers(text_main, currency)
     if not nums:
         nums = _extract_salary_numbers(text, currency)
     if not nums:
         return _base
 
-    # ── Loại bỏ salary_max = 0 (vietnamwork pattern) ────────────────────────
     nums = [n for n in nums if n > 0]
     if not nums:
         return _base
@@ -1193,44 +1070,35 @@ def parse_compensation(raw: str) -> dict:
     else:
         sal_min, sal_max = nums[0], nums[-1]
 
-    # ── Convert period → monthly ─────────────────────────────────────────────
     if period == "year":
         if sal_min is not None:
             sal_min = round(sal_min / 12, 2)
         if sal_max is not None:
             sal_max = round(sal_max / 12, 2)
     elif period == "hour":
-        # 1 tháng ≈ 160 giờ làm việc
         if sal_min is not None:
             sal_min = round(sal_min * 160, 2)
         if sal_max is not None:
             sal_max = round(sal_max * 160, 2)
 
-    # ── Sanity check — nếu số bất thường sau convert thì infer lại ──────────
     lo_bound, hi_bound = _MONTHLY_SANITY.get(currency, (0, float("inf")))
 
-    # Nếu cả 2 đều nằm ngoài range → thử infer period
     if period == "month":
         if sal_min is not None and sal_min > hi_bound:
-            # Số quá lớn → có thể là annual chưa được tag
             sal_min = round(sal_min / 12, 2)
             if sal_max is not None:
                 sal_max = round(sal_max / 12, 2)
         elif sal_max is not None and sal_max < lo_bound and sal_max > 0:
-            # Số quá nhỏ với VND → có thể đơn vị là nghìn
             if currency == "VND" and sal_max < 10_000:
                 sal_min = round(sal_min * 1_000, 2) if sal_min else None
                 sal_max = round(sal_max * 1_000, 2)
 
-    # ── Final sanity — set None nếu vẫn bất thường ──────────────────────────
     sal_min = _sanity_check(sal_min, currency)
     sal_max = _sanity_check(sal_max, currency)
 
-    # Đảm bảo min <= max
     if sal_min is not None and sal_max is not None and sal_min > sal_max:
         sal_min, sal_max = sal_max, sal_min
 
-    # Nếu cả 2 đều None sau sanity → negotiable
     if sal_min is None and sal_max is None:
         return _base
 
@@ -1241,6 +1109,7 @@ def parse_compensation(raw: str) -> dict:
         "conversion_rate": rate,
         "is_negotiable":   0,
     }
+
 
 # ==============================================================================
 # 2.8 Experience
@@ -1355,10 +1224,8 @@ def parse_level(level_raw: str, job_title_raw: str,
                 exp_min: float | None, exp_max: float | None,
                 job_desc: str = "", job_req: str = "") -> str | None:
     for source in [
-        _s(level_raw),
-        _s(job_title_raw),
-        _s(job_desc)[:500],
-        _s(job_req)[:500],
+        _s(level_raw), _s(job_title_raw),
+        _s(job_desc)[:500], _s(job_req)[:500],
     ]:
         if not source:
             continue
@@ -1372,7 +1239,7 @@ def parse_level(level_raw: str, job_title_raw: str,
             if lo <= avg < hi:
                 return label
 
-    return "Mid-level"
+    return "Unknown"
 
 
 # ==============================================================================
@@ -1406,12 +1273,7 @@ def parse_jd_fields(job_desc: str, job_req: str,
             break
 
     found_certs = sorted({c for c in CERT_KW if c in full})
-
-    languages = sorted({
-        LANG_CERT_TO_LANG[c]
-        for c in found_certs
-        if c in LANG_CERT_TO_LANG
-    })
+    languages   = sorted({LANG_CERT_TO_LANG[c] for c in found_certs if c in LANG_CERT_TO_LANG})
 
     return {
         "hard_skills":    ", ".join(sorted(hard)) or None,
@@ -1467,24 +1329,16 @@ def parse_company_size(raw: str) -> dict:
 # 2.13 Industry
 # ==============================================================================
 
-_UNKNOWN_INDUSTRY = {
-    "industry_level1": "Không xác định",
-    "industry_level2": "Không xác định",
-}
+_UNKNOWN_INDUSTRY = {"industry_level1": "Không xác định", "industry_level2": "Không xác định"}
 
 
 def parse_industry(raw: str, major: str | None = None) -> dict:
     text = (_s(raw) + " " + _s(major)).lower()
     if not text.strip():
         return _UNKNOWN_INDUSTRY.copy()
-
     for entry in INDUSTRY_TREE:
         if any(kw in text for kw in entry["kw"]):
-            return {
-                "industry_level1": entry["l1"],
-                "industry_level2": entry["l2"],
-            }
-
+            return {"industry_level1": entry["l1"], "industry_level2": entry["l2"]}
     return _UNKNOWN_INDUSTRY.copy()
 
 
@@ -1574,16 +1428,7 @@ class CompanyDeduplicator:
     THRESHOLD = 88
 
     def __init__(self):
-        self._fuzz = None
-        try:
-            from rapidfuzz import fuzz as _f
-            self._fuzz = _f
-        except ImportError:
-            try:
-                from thefuzz import fuzz as _f
-                self._fuzz = _f
-            except ImportError:
-                print("⚠ rapidfuzz/thefuzz không tìm thấy — bỏ qua dedup công ty.")
+        self._fuzz = _fuzz  # đã import ở đầu file
 
     @property
     def available(self) -> bool:
@@ -1664,7 +1509,7 @@ class CompanyDeduplicator:
             lambda x: mapping.get(x, x) if pd.notna(x) else x
         )
         total_after = df["company_title_clean"].nunique()
-        n_merged = total_before - total_after
+        n_merged    = total_before - total_after
 
         print(f"   🔗 Dedup công ty: {total_before:,} tên → {total_after:,} tên đại diện "
               f"(gộp {n_merged:,} tên trùng).")
@@ -1805,15 +1650,17 @@ class RecruitmentETL:
                  fallback={"job_posted_at_clean": None, "job_deadline_clean": None})
 
             _try("job_title", parse_job_title,
-                row["job_title"], row["job_category"],
-                fallback={
-                    "job_title_clean":    None,
-                    "job_title_detect":   None,
-                    "job_category_clean": "Non-IT",
-                    "is_it":              0,
-                })
+                 row["job_title"], row["job_category"],
+                 fallback={
+                     "job_title_clean":    None,
+                     "job_title_detect":   None,
+                     "job_category_clean": "Non-IT",
+                     "is_it":              0,
+                 })
+
             _try("company_title", parse_company_title, row["company_title"],
-                 fallback={"company_title_clean": None, "company_type": None})
+                 fallback={"company_title_clean": None, "company_type": None,
+                           "company_canonical_key": None})
 
             _try("job_type", parse_work_style,
                  row["job_type"], row["work_mode"], row["job_description"],
@@ -1823,18 +1670,16 @@ class RecruitmentETL:
                  fallback={"salary_min": None, "salary_max": None,
                            "salary_currency": None, "conversion_rate": None,
                            "is_negotiable": 1})
+
             _try("experience", parse_experience,
                  row["experience"], row["job_description"], row["job_requirement"],
                  fallback={"exp_min_yr": None, "exp_max_yr": None, "is_exp_required": None})
 
-            _try("level", parse_level,
-                 row["level"], row["job_title"],
-                 row.get("exp_min_yr"), row.get("exp_max_yr"),
-                 row["job_description"], row["job_requirement"],
-                 fallback="Mid-level")
-
-            if "level" in row and row.get("level_clean") is None:
-                row["level_clean"] = row.get("level")
+            _try("level_clean", parse_level,
+                row["level"], row["job_title"],
+                row.get("exp_min_yr"), row.get("exp_max_yr"),
+                row["job_description"], row["job_requirement"],
+                fallback="Unknown")
 
             _try("job_description", parse_jd_fields,
                  row["job_description"], row["job_requirement"],
@@ -1867,24 +1712,23 @@ class RecruitmentETL:
                        row["number_recruit"], "PARSE_FAIL", str(e))
                 row["number_recruit_clean"] = 1
 
-            if "level_clean" not in row or row.get("level_clean") is None:
-                try:
-                    lv = parse_level(
-                        row.get("level", ""), row.get("job_title", ""),
-                        row.get("exp_min_yr"), row.get("exp_max_yr"),
-                        row.get("job_description", ""), row.get("job_requirement", "")
-                    )
-                    row["level_clean"] = lv
-                except Exception:
-                    row["level_clean"] = "Mid-level"
+            # if "level_clean" not in row or row.get("level_clean") is None:
+            #     try:
+            #         lv = parse_level(
+            #             row.get("level", ""), row.get("job_title", ""),
+            #             row.get("exp_min_yr"), row.get("exp_max_yr"),
+            #             row.get("job_description", ""), row.get("job_requirement", "")
+            #         )
+            #         row["level_clean"] = lv
+            #     except Exception:
+            #         row["level_clean"] = "Unknown"
 
             try:
                 locs = parse_location(row["location"])
             except Exception as e:
                 ec.add(run_id, src_id, job_url, "location",
                        row["location"], "PARSE_FAIL", str(e))
-                locs = [{"location_province": "Khác",
-                         "location_region": "Khác", "is_vn": 0}]
+                locs = [{"location_province": "Khác", "location_region": "Khác", "is_vn": 0}]
 
             if not locs:
                 ec.add(run_id, src_id, job_url, "location", row["location"],
@@ -1942,7 +1786,7 @@ class RecruitmentETL:
                     batch = pairs[i:i+500]
                     conditions = " OR ".join(
                         [f"(job_url = :u{j} AND location_province = :p{j})"
-                        for j in range(len(batch))]
+                         for j in range(len(batch))]
                     )
                     params = {}
                     for j, (url, prov) in enumerate(batch):
@@ -1954,6 +1798,7 @@ class RecruitmentETL:
                     )
             _insert_chunk(upd_df)
             print(f"   🔄 UPDATE {len(upd_df):,} rows cũ.")
+
         return {"new": len(new_df), "updated": len(upd_df)}
 
     def _save_errors(self, ec: ErrorCollector, run_id: int):
@@ -1963,6 +1808,177 @@ class RecruitmentETL:
         df_err.to_sql(ERROR_TABLE, self.engine, if_exists="append",
                       index=False, chunksize=500)
         print(f"   ⚠ Ghi {len(df_err)} error records.")
+
+    # --------------------------------------------------------------------------
+    # COMPANY MATCH — gộp từ company.py, logic bidirectional + 2-pass search
+    # --------------------------------------------------------------------------
+
+    def _ts_client(self):
+        return typesense.Client({
+            'nodes': [{'host': TS_CONFIG["host"], 'port': TS_CONFIG["port"],
+                       'protocol': 'http'}],
+            'api_key':                    TS_CONFIG["api_key"],
+            'connection_timeout_seconds': TS_CONFIG["timeout"],
+        })
+
+    def _match_one_company(self, ts, name: str) -> dict:
+        """
+        Match 1 tên công ty với Typesense.
+        Dùng bidirectional_score + 2-pass search + type_penalty=30.
+        """
+        normalized = _normalize_company_name(name)
+        name_clean = _match_clean_for_search(normalized)
+        raw_type   = _match_get_type(normalized)
+
+        _base = {'raw_name': name, 'matched_name': None, 'final_score': 0}
+
+        if not name_clean:
+            return {**_base, 'status': 'empty', 'note': ''}
+
+        try:
+            hits = _match_search_typesense(ts, name_clean)
+        except Exception as e:
+            return {**_base, 'status': 'error', 'note': str(e)}
+
+        if not hits:
+            return {**_base, 'status': 'no_match', 'note': ''}
+
+        scored = []
+        for h in hits:
+            official = h['document']['name_official']
+            off_type = _match_get_type(official)
+
+            raw_ratio, prefix_bonus, prefix_note = _bidirectional_score(normalized, official)
+
+            # type_penalty = 30 (không phải 100) — tránh bắn hết sang no_match
+            if raw_type and off_type:
+                type_penalty = 30 if raw_type != off_type else 0
+                type_note    = (f'Loại hình khác ({raw_type}≠{off_type})'
+                                if type_penalty else '')
+            elif raw_type or off_type:
+                type_penalty, type_note = 5, 'Một bên không rõ loại hình'
+            else:
+                type_penalty, type_note = 0, ''
+
+            final_score = raw_ratio + prefix_bonus - type_penalty
+            scored.append({
+                'official_name': official,
+                'raw_ratio':     raw_ratio,
+                'prefix_bonus':  prefix_bonus,
+                'type_penalty':  type_penalty,
+                'final_score':   final_score,
+                'note':          ' | '.join(filter(None, [prefix_note, type_note])),
+            })
+
+        scored.sort(key=lambda x: x['final_score'], reverse=True)
+        best = scored[0]
+
+        if best['final_score'] >= 85:
+            status = 'ok'
+        elif best['final_score'] >= 65:
+            status = 'review'
+        else:
+            status = 'no_match'
+
+        return {
+            'raw_name':     name,
+            'matched_name': best['official_name'] if status == 'ok' else None,
+            'final_score':  best['final_score'],
+            'raw_ratio':    best['raw_ratio'],
+            'prefix_bonus': best['prefix_bonus'],
+            'type_penalty': best['type_penalty'],
+            'status':       status,
+            'note':         best['note'],
+        }
+
+    def _match_and_update_companies(self, run_id: int):
+        """
+        Sau khi ETL lưu xong fact_jobs_etl:
+          1. Lấy distinct company_title_clean của run hiện tại
+          2. Match với Typesense (bidirectional score)
+          3. ok       → UPDATE company_title_clean = tên chuẩn
+             review   → giữ nguyên (tên normalize từ ETL)
+             no_match → giữ nguyên (coi là tên mới)
+          4. Export Excel chi tiết + ghi note vào fact_etl_log
+        """
+        print("\n⏳ [3.5/4] Match tên công ty với Typesense...")
+
+        with self.engine.connect() as conn:
+            df_co = pd.read_sql(
+                f"""SELECT DISTINCT company_title_clean
+                    FROM {FACT_TABLE}
+                    WHERE etl_run_id = {run_id}
+                      AND company_title_clean IS NOT NULL
+                      AND company_title_clean != ''
+                      AND company_title_clean != 'Confidential'""",
+                conn,
+            )
+
+        if df_co.empty:
+            print("   Không có tên công ty cần match.")
+            return
+
+        names = df_co["company_title_clean"].tolist()
+        print(f"   {len(names):,} tên công ty unique cần xử lý...")
+
+        ts      = self._ts_client()
+        results = []
+
+        for name in tqdm(names, desc="  Matching", unit="cty"):
+            r = self._match_one_company(ts, name)
+            results.append(r)
+            time.sleep(0.05)
+
+        df_res = pd.DataFrame(results)
+
+        n_ok       = int((df_res['status'] == 'ok'      ).sum())
+        n_review   = int((df_res['status'] == 'review'  ).sum())
+        n_no_match = int((df_res['status'] == 'no_match').sum())
+        n_error    = int((df_res['status'] == 'error'   ).sum())
+
+        # UPDATE những cái ok
+        ok_rows = df_res[df_res['status'] == 'ok']
+        if not ok_rows.empty:
+            with self.engine.begin() as conn:
+                for _, row in ok_rows.iterrows():
+                    conn.execute(sqlalchemy.text(f"""
+                        UPDATE {FACT_TABLE}
+                        SET    company_title_clean = :matched
+                        WHERE  etl_run_id          = :run_id
+                          AND  company_title_clean  = :raw
+                    """), {
+                        'matched': row['matched_name'],
+                        'run_id':  run_id,
+                        'raw':     row['raw_name'],
+                    })
+            print(f"   ✅ Cập nhật {n_ok:,} tên chuẩn (ok).")
+
+        if n_review:
+            print(f"   🔶 {n_review:,} cần review  → giữ tên normalize.")
+        if n_no_match:
+            print(f"   ⬜ {n_no_match:,} no_match   → coi là tên mới, giữ nguyên.")
+        if n_error:
+            print(f"   ❌ {n_error:,} lỗi timeout → giữ nguyên.")
+
+        # Ghi note vào log
+        note = (f"company_match ok={n_ok} review={n_review} "
+                f"no_match={n_no_match} error={n_error}")
+        with self.engine.begin() as conn:
+            conn.execute(sqlalchemy.text(f"""
+                UPDATE {LOG_TABLE}
+                SET note = CONCAT(IFNULL(note,''), ' | ', :note)
+                WHERE run_id = :rid
+            """), {"note": note, "rid": run_id})
+
+        # Export Excel chi tiết
+        ts_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        df_res.to_excel(f'company_match_{ts_str}.xlsx', index=False)
+        print(f"   📋 Chi tiết → company_match_{ts_str}.xlsx  "
+              f"(ok={n_ok} review={n_review} no_match={n_no_match} err={n_error})")
+
+    # --------------------------------------------------------------------------
+    # RUN
+    # --------------------------------------------------------------------------
 
     def run(self, mode: str = "today", date_str: str | None = None):
         print(f"\n{'=' * 62}")
@@ -1989,13 +2005,16 @@ class RecruitmentETL:
             counts["errors"] = len(ec)
 
             print("\n⏳ [2.5/4] Dedup công ty...")
-            deduper = CompanyDeduplicator()
+            deduper  = CompanyDeduplicator()
             df_clean = deduper.apply(df_clean)
 
             print("\n⏳ [3/4] Save fact...")
-            saved = self._save_fact(df_clean)
+            saved             = self._save_fact(df_clean)
             counts["new"]     = saved["new"]
             counts["updated"] = saved["updated"]
+
+            # Match tên công ty sau khi đã lưu vào DB
+            self._match_and_update_companies(run_id)
 
             print("\n⏳ [4/4] Save errors...")
             self._save_errors(ec, run_id)
