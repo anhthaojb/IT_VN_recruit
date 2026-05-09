@@ -6,7 +6,6 @@ __pycache__/
 *.json
 *.jsonl
 *.log
-# Nếu dùng database local, đừng đẩy file db đi
 *.sqlite3
 chrome_profile_linkedin/
 *.zip
@@ -22,3 +21,4 @@ daunet.py
 typesence.py
 company_stock.py
 masothue.py
+!company.csv
