@@ -20,6 +20,11 @@
 #   - ok (score ≥ 85)     → UPDATE company_title_clean = tên chuẩn Typesense
 #   - review (65–84)      → giữ tên normalize, export Excel để xem lại
 #   - no_match (< 65)     → coi là tên mới, giữ nguyên
+#
+# Thay đổi so với phiên bản trước:
+#   - Bỏ Dim_ThoiGian: date hierarchy tạo trong Power BI từ cột ngay_dang (DATE)
+#   - Thêm cột ngay_dang vào Fact_JobPostings thay cho date_key
+#   - Tên công ty blank/NULL sau parse → 'Unknown' (thay vì NULL)
 # ==============================================================================
 
 import re
@@ -93,7 +98,6 @@ _COMPANY_TYPE_NORMALIZE = [
     (r'\bTĐ\b',                                    'Tập đoàn'),
 ]
 
-# Rules detect loại hình — dùng cho cả parse và match scoring
 _COMPANY_TYPE_RULES_MATCH = [
     (r'\bCông\s+ty\s+Cổ\s+phần\b',      'Cổ phần'),
     (r'\bTrách\s+nhiệm\s+hữu\s+hạn\b',  'TNHH'),
@@ -105,7 +109,6 @@ _COMPANY_TYPE_RULES_MATCH = [
     (r'\bMTV\b',                         'TNHH MTV'),
 ]
 
-# Noise words cần strip trước khi gửi lên Typesense
 _COMPANY_SEARCH_NOISE = [
     r'\bCông\s+ty\b', r'\bCty\b', r'\bViệt\s+Nam\b', r'\bVN\b', r'\bVietnam\b',
     r'\bTNHH\b', r'\bCổ\s+phần\b', r'\bCP\b', r'\bMTV\b',
@@ -113,9 +116,6 @@ _COMPANY_SEARCH_NOISE = [
 
 
 def _normalize_company_name(name: str) -> str:
-    """Chuẩn hoá prefix pháp lý, giữ nguyên tên thương hiệu.
-    'CTCP Vinamilk' → 'Công ty Cổ phần Vinamilk'
-    """
     result = (name or "").strip()
     for pattern, replacement in _COMPANY_TYPE_NORMALIZE:
         result, n = re.subn(pattern, replacement, result, flags=re.IGNORECASE)
@@ -125,7 +125,6 @@ def _normalize_company_name(name: str) -> str:
 
 
 def _match_clean_for_search(name: str) -> str:
-    """Strip noise words, lowercase, collapse spaces — dùng làm query Typesense."""
     res = name.lower()
     for pat in _COMPANY_SEARCH_NOISE:
         res = re.sub(pat, ' ', res, flags=re.IGNORECASE)
@@ -134,7 +133,6 @@ def _match_clean_for_search(name: str) -> str:
 
 
 def _match_get_type(name: str) -> str | None:
-    """Trả về loại hình công ty từ tên, hoặc None nếu không xác định."""
     for pattern, ctype in _COMPANY_TYPE_RULES_MATCH:
         if re.search(pattern, name, flags=re.IGNORECASE):
             return ctype
@@ -143,11 +141,6 @@ def _match_get_type(name: str) -> str | None:
 
 def _match_search_typesense(ts, name_clean: str,
                              retries: int = 1, delay: float = 0.5) -> list:
-    """
-    2-pass Typesense search:
-      Pass 1: prefix=true  → ưu tiên khớp từ trái sang phải
-      Pass 2: prefix=false → infix fallback nếu pass 1 trống
-    """
     params_prefix = {
         'q': name_clean, 'query_by': 'name_official',
         'per_page': 10, 'prefix': 'true', 'sort_by': '_text_match:desc',
@@ -173,17 +166,6 @@ def _match_search_typesense(ts, name_clean: str,
 
 
 def _bidirectional_score(name_a: str, name_b: str) -> tuple[int, int, str]:
-    """
-    Score tương đồng hai chiều:
-      max(ratio, partial_ratio a→b, partial_ratio b→a, token_sort_ratio) + prefix_bonus
-
-    prefix_bonus:
-      +30 nếu cả 2 chiều đều là prefix của nhau (bằng nhau)
-      +15 nếu 1 chiều
-      -20 nếu không chiều nào
-
-    Trả về: (raw_ratio, prefix_bonus, note)
-    """
     a = name_a.lower().strip()
     b = name_b.lower().strip()
 
@@ -330,7 +312,6 @@ CREATE TABLE IF NOT EXISTS {ERROR_TABLE} (
 # ==============================================================================
 
 def _s(val) -> str:
-    """Giá trị → string sạch, bỏ nan/None."""
     if val is None or (isinstance(val, float) and np.isnan(val)):
         return ""
     return str(val).strip()
@@ -733,16 +714,25 @@ def _build_canonical_key(raw_clean: str) -> str:
 
 
 def parse_company_title(raw: str) -> dict:
-    if not raw:
+    """
+    Parse và chuẩn hoá tên công ty.
+    - Blank/None/chỉ whitespace → trả về 'Unknown' (không để NULL)
+    - Confidential               → trả về 'Confidential'
+    - Các trường hợp khác        → normalize như cũ
+    """
+    s = (raw or "").strip()
+
+    # ── Trường hợp 1: tên rỗng hoàn toàn ────────────────────────────────────
+    if not s:
         return {
-            'company_title_clean':   None,
-            'company_type':          None,
-            'company_canonical_key': None,
+            'company_title_clean':   'Unknown',
+            'company_type':          'Unknown',
+            'company_canonical_key': 'unknown',
         }
 
-    s  = str(raw).strip()
     sl = s.lower()
 
+    # ── Trường hợp 2: tên ẩn danh / bảo mật ─────────────────────────────────
     if _CONFIDENTIAL_RE.search(sl):
         return {
             'company_title_clean':   'Confidential',
@@ -750,6 +740,7 @@ def parse_company_title(raw: str) -> dict:
             'company_canonical_key': 'confidential',
         }
 
+    # ── Trường hợp 3: tên thông thường ───────────────────────────────────────
     company_type = None
     for pattern, ctype in COMPANY_TYPE_PATTERNS:
         if re.search(pattern, sl):
@@ -759,8 +750,17 @@ def parse_company_title(raw: str) -> dict:
     normalized = _normalize_company_name(s)
     canonical  = _build_canonical_key(normalized)
 
+    # Nếu sau khi strip hết prefix pháp lý tên vẫn rỗng → 'Unknown'
+    clean_name = normalized or s
+    if not clean_name.strip():
+        return {
+            'company_title_clean':   'Unknown',
+            'company_type':          'Unknown',
+            'company_canonical_key': 'unknown',
+        }
+
     return {
-        'company_title_clean':   normalized or s,
+        'company_title_clean':   clean_name,
         'company_type':          company_type or 'Khác',
         'company_canonical_key': canonical or None,
     }
@@ -1428,7 +1428,7 @@ class CompanyDeduplicator:
     THRESHOLD = 88
 
     def __init__(self):
-        self._fuzz = _fuzz  # đã import ở đầu file
+        self._fuzz = _fuzz
 
     @property
     def available(self) -> bool:
@@ -1453,7 +1453,9 @@ class CompanyDeduplicator:
         if not self.available:
             return {}
 
-        valid = [(n, k) for n, k in name_key_pairs if n and k]
+        # Loại trừ 'Unknown' và 'Confidential' khỏi dedup
+        valid = [(n, k) for n, k in name_key_pairs
+                 if n and k and n not in ('Unknown', 'Confidential')]
         if not valid:
             return {}
 
@@ -1658,9 +1660,13 @@ class RecruitmentETL:
                      "is_it":              0,
                  })
 
+            # Fallback trả về 'Unknown' thay vì None — nhất quán với parse_company_title
             _try("company_title", parse_company_title, row["company_title"],
-                 fallback={"company_title_clean": None, "company_type": None,
-                           "company_canonical_key": None})
+                 fallback={
+                     "company_title_clean":   "Unknown",
+                     "company_type":          "Unknown",
+                     "company_canonical_key": "unknown",
+                 })
 
             _try("job_type", parse_work_style,
                  row["job_type"], row["work_mode"], row["job_description"],
@@ -1711,17 +1717,6 @@ class RecruitmentETL:
                 ec.add(run_id, src_id, job_url, "number_recruit_clean",
                        row["number_recruit"], "PARSE_FAIL", str(e))
                 row["number_recruit_clean"] = 1
-
-            # if "level_clean" not in row or row.get("level_clean") is None:
-            #     try:
-            #         lv = parse_level(
-            #             row.get("level", ""), row.get("job_title", ""),
-            #             row.get("exp_min_yr"), row.get("exp_max_yr"),
-            #             row.get("job_description", ""), row.get("job_requirement", "")
-            #         )
-            #         row["level_clean"] = lv
-            #     except Exception:
-            #         row["level_clean"] = "Unknown"
 
             try:
                 locs = parse_location(row["location"])
@@ -1810,7 +1805,7 @@ class RecruitmentETL:
         print(f"   ⚠ Ghi {len(df_err)} error records.")
 
     # --------------------------------------------------------------------------
-    # COMPANY MATCH — gộp từ company.py, logic bidirectional + 2-pass search
+    # COMPANY MATCH
     # --------------------------------------------------------------------------
 
     def _ts_client(self):
@@ -1822,10 +1817,6 @@ class RecruitmentETL:
         })
 
     def _match_one_company(self, ts, name: str) -> dict:
-        """
-        Match 1 tên công ty với Typesense.
-        Dùng bidirectional_score + 2-pass search + type_penalty=30.
-        """
         normalized = _normalize_company_name(name)
         name_clean = _match_clean_for_search(normalized)
         raw_type   = _match_get_type(normalized)
@@ -1850,7 +1841,6 @@ class RecruitmentETL:
 
             raw_ratio, prefix_bonus, prefix_note = _bidirectional_score(normalized, official)
 
-            # type_penalty = 30 (không phải 100) — tránh bắn hết sang no_match
             if raw_type and off_type:
                 type_penalty = 30 if raw_type != off_type else 0
                 type_note    = (f'Loại hình khác ({raw_type}≠{off_type})'
@@ -1893,13 +1883,8 @@ class RecruitmentETL:
 
     def _match_and_update_companies(self, run_id: int):
         """
-        Sau khi ETL lưu xong fact_jobs_etl:
-          1. Lấy distinct company_title_clean của run hiện tại
-          2. Match với Typesense (bidirectional score)
-          3. ok       → UPDATE company_title_clean = tên chuẩn
-             review   → giữ nguyên (tên normalize từ ETL)
-             no_match → giữ nguyên (coi là tên mới)
-          4. Export Excel chi tiết + ghi note vào fact_etl_log
+        Match tên công ty với Typesense sau khi ETL lưu xong.
+        Bỏ qua 'Unknown' và 'Confidential' — không cần match.
         """
         print("\n⏳ [3.5/4] Match tên công ty với Typesense...")
 
@@ -1909,8 +1894,7 @@ class RecruitmentETL:
                     FROM {FACT_TABLE}
                     WHERE etl_run_id = {run_id}
                       AND company_title_clean IS NOT NULL
-                      AND company_title_clean != ''
-                      AND company_title_clean != 'Confidential'""",
+                      AND company_title_clean NOT IN ('', 'Confidential', 'Unknown')""",
                 conn,
             )
 
@@ -1936,7 +1920,6 @@ class RecruitmentETL:
         n_no_match = int((df_res['status'] == 'no_match').sum())
         n_error    = int((df_res['status'] == 'error'   ).sum())
 
-        # UPDATE những cái ok
         ok_rows = df_res[df_res['status'] == 'ok']
         if not ok_rows.empty:
             with self.engine.begin() as conn:
@@ -1960,7 +1943,6 @@ class RecruitmentETL:
         if n_error:
             print(f"   ❌ {n_error:,} lỗi timeout → giữ nguyên.")
 
-        # Ghi note vào log
         note = (f"company_match ok={n_ok} review={n_review} "
                 f"no_match={n_no_match} error={n_error}")
         with self.engine.begin() as conn:
@@ -1970,7 +1952,6 @@ class RecruitmentETL:
                 WHERE run_id = :rid
             """), {"note": note, "rid": run_id})
 
-        # Export Excel chi tiết
         ts_str = datetime.now().strftime('%Y%m%d_%H%M%S')
         df_res.to_excel(f'company_match_{ts_str}.xlsx', index=False)
         print(f"   📋 Chi tiết → company_match_{ts_str}.xlsx  "
@@ -2013,7 +1994,6 @@ class RecruitmentETL:
             counts["new"]     = saved["new"]
             counts["updated"] = saved["updated"]
 
-            # Match tên công ty sau khi đã lưu vào DB
             self._match_and_update_companies(run_id)
 
             print("\n⏳ [4/4] Save errors...")

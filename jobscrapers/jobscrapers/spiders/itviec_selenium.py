@@ -505,9 +505,10 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
             tracker.record(status, item)
 
             seen_urls.add(real_url)
-            job_count += 1
+            if status == "new":
+                job_count += 1
 
-            status = "✅ mới" if status == "new" else "🔄 updated"
+            status = "✅ mới" if status== "new" else "🔄 updated"
             print(f"  {status} [{job_count}] {item['job_title']} @ {item['company_title']}")
 
             time.sleep(0.8)
