@@ -15,7 +15,7 @@ class JobokoSpider(scrapy.Spider):
         "CONCURRENT_REQUESTS": 1,
         "CONCURRENT_REQUESTS_PER_DOMAIN": 1,
     }
-    MAX_PAGES_DAILY = 5  # safety: nếu detail check fail thì không cào cả site
+    MAX_PAGES_DAILY = 3  # safety: nếu detail check fail thì không cào cả site
 
     def _get_mode(self):
         return self.crawler.settings.get("CRAWL_MODE", "daily")
