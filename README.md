@@ -160,26 +160,114 @@ Scrapy / Selenium Crawlers
 
 ### Crawling Architecture
 
-The system combines:
+The system uses a hybrid large-scale crawling architecture combining:
 
-* **Scrapy** for scalable concurrent crawling
-* **Selenium** for JavaScript-rendered platforms (LinkedIn, ITviec)
+* **Scrapy** for high-performance concurrent crawling on static websites
+* **Selenium** and **Playwright** for JavaScript-rendered platforms and dynamic interactions
+* **Direct API calls** for platforms exposing hidden network endpoints, improving crawl speed and reducing browser overhead
 
-### Extracted Fields
+This hybrid approach allowed the pipeline to balance:
 
-Each posting contains:
+* scalability
+* stability
+* anti-bot handling
+* dynamic rendering support
+* collection speed
+
+### Collection Strategy
+
+Different platforms required different extraction approaches:
+
+| Method       | Use Case                                                     |
+| ------------ | ------------------------------------------------------------ |
+| Scrapy       | Static HTML job boards                                       |
+| Selenium     | Dynamic pages requiring browser automation                   |
+| Playwright   | Heavy JavaScript rendering, async loading, anti-bot handling |
+| API Requests | Hidden/internal APIs for structured job data                 |
+
+### Extracted Data
+
+Each job posting includes:
 
 * job title
+* company
 * salary
 * experience
-* company
-* industry
 * location
 * skills
 * education
-* job description
 * work mode
+* job description
 * metadata timestamps
+
+for a total of **24 raw attributes per posting**.
+
+---
+
+## ⚡ Crawling & Pipeline Engineering
+
+The crawling pipeline was designed to support:
+
+* automated daily execution
+* concurrent spider processing
+* incremental updates
+* full reindex workflows
+* failure recovery & logging
+
+### Pipeline Modes
+
+```text id="d5k5bm"
+MODE=daily  → crawl & process new data only
+MODE=full   → full recrawl + Typesense reindex
+```
+
+### Orchestration Flow
+
+```text id="mqvxt5"
+Playwright / Selenium / API / Scrapy
+                    ↓
+             Raw MySQL Tables
+                    ↓
+            ETL Transformation
+                    ↓
+        Company Matching Engine
+                    ↓
+           Analytical Warehouse
+                    ↓
+            Power BI Dashboards
+```
+
+### Key Engineering Challenges
+
+#### Dynamic Rendering
+
+Some platforms relied heavily on client-side rendering and asynchronous requests.
+Playwright was used to:
+
+* wait for dynamic components
+* intercept network requests
+* simulate real browser behavior
+* reduce crawler blocking issues
+
+#### API Reverse Engineering
+
+For several platforms, the crawler extracted data directly from internal APIs by analyzing browser network traffic, allowing:
+
+* faster extraction
+* cleaner structured responses
+* lower infrastructure overhead compared to browser automation
+
+#### Reliability & Automation
+
+The pipeline included:
+
+* retry handling
+* health checks
+* scheduled execution
+* ETL logging
+* parsing error tracking
+
+to ensure stable long-term operation.
 
 ---
 
