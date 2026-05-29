@@ -55,10 +55,6 @@ class Vieclam24hSpider(scrapy.Spider):
                 pass
         return False
 
-    # ------------------------------------------------------------------
-    # parse — danh sách job
-    # ------------------------------------------------------------------
-
     def parse(self, response):
         if self.stopped:
             return

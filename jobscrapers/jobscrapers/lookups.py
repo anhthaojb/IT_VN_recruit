@@ -5,10 +5,6 @@
 
 import re
 
-# ==============================================================================
-# 1. GEO
-# ==============================================================================
-
 PROVINCE_CANONICAL: dict[str, str] = {
 
     # ── TP. Hồ Chí Minh ──────────────────────────────────────────────────────
@@ -217,12 +213,6 @@ FOREIGN_KW: list[str] = [
     "mỹ", "úc", "anh",
 ]
 
-
-# ==============================================================================
-# 2. SALARY
-# ==============================================================================
-
-# FIX: conversion_rate = hệ số để đổi sang NGHÌN VND (đơn vị lưu trữ)
 # Ví dụ:
 #   1 USD  × 25000 = 25.000.000 đồng = 25.000 nghìn đồng  → rate = 25000
 #   1 triệu VND × 1000 = 1.000.000 đồng = 1000 nghìn đồng → rate = 1000
@@ -257,9 +247,6 @@ SALARY_BINS: list[tuple[float, float, str]] = [
 ]
 
 
-# ==============================================================================
-# 3. EXPERIENCE
-# ==============================================================================
 
 NO_EXP_KW: frozenset[str] = frozenset([
     "không yêu cầu", "no experience", "chưa có kinh nghiệm",
@@ -278,52 +265,48 @@ EXP_BINS: list[tuple[float, float, str]] = [
 ]
 
 
-# ==============================================================================
-# 4. JOB CLASSIFICATION
-# ==============================================================================
 
 LEVEL_MAP: list[tuple[list[str], str]] = [
-    # 0. Intern
+
     (["intern", "thực tập", "internship", "trainee"],
      "Intern"),
 
-    # 1. Fresher / Entry
+
     (["fresher", "fresh grad", "mới tốt nghiệp", "entry level", "entry-level"],
      "Fresher"),
 
-    # 2. Junior
+
     (["junior", "jr"],
      "Junior"),
 
-    # 3. Mid-level
+
     (["mid-level", "mid level", "middle", "intermediate"],
      "Middle"),
 
-    # 4. Senior
+
     (["senior", "sr", "experienced", "chuyên gia", "chuyên viên cao cấp"],
      "Senior"),
 
-    # 5. Lead / Leader
+
     (["leader", "lead", "tech lead", "team lead", "trưởng nhóm"],
      "Lead"),
 
-    # 6. Manager
+
     (["manager", "quản lý", "trưởng phòng", "project manager", r"\bpm\b"],
      "Manager"),
 
-    # 7. Head
+
     (["head", "head of", "trưởng bộ phận"],
      "Head"),
 
-    # 8. Director
     (["director", "giám đốc"],
      "Director"),
 
-    # 9. VP
+
     ([r"\bvp\b", "vice president", "phó giám đốc"],
      "VP"),
 
-    # 10. C-Level
+
     (["ceo", "cto", "cfo", "coo", "cmo", "c-level"],
      "C-Level"),
 ]
@@ -449,20 +432,20 @@ COMPANY_TYPE_STRIP = re.compile(
 )
 
 JOB_CATEGORY_MAP: dict[str, str] = {
-    # --- Management & Consulting ---
+
     "Project Manager":      "Management & Consulting",
     "Project Leader":       "Management & Consulting",
     "IT Manager":           "Management & Consulting",
     "Tech Lead":            "Management & Consulting",
     "IT Consultant":        "Management & Consulting",
 
-    # --- Product Management ---
+
     "Product Owner":        "Product Management",
     "Product Manager":      "Product Management",
     "Product Executive":    "Product Management",
     "Business Analyst":     "Product Management", 
 
-    # --- Software Development ---
+  
     "Full-stack Developer": "Software Development",
     "Back-end Developer":   "Software Development",
     "Front-end Developer":  "Software Development",
@@ -470,40 +453,39 @@ JOB_CATEGORY_MAP: dict[str, str] = {
     "Game Developer":       "Software Development",
     "Embedded Engineer":    "Software Development",
 
-    # --- Testing ---
+    
     "Tester":               "Testing",
     "QA - QC":              "Testing",
 
-    # --- Cloud & Infrastructure ---
+
     "DevOps/DevSecOps":     "Cloud & Infrastructure",
     "Cloud Engineer":       "Cloud & Infrastructure",
     "System Engineer":      "Cloud & Infrastructure",
     "System Admin":         "Cloud & Infrastructure",
 
-    # --- Data Analytics ---
     "Data Engineer":        "Data Analytics",
     "Data Analyst":         "Data Analytics",
     "Data Scientist":       "Data Analytics",
     "BI Analyst":           "Data Analytics",
     "Database Engineer":    "Data Analytics",
 
-    # --- AI & Blockchain ---
+
     "AI Engineer":          "AI & Blockchain",
     "Blockchain Engineer":  "AI & Blockchain",
 
-    # --- Designing ---
+   
     "Designer":             "Designing",
 
-    # --- Helpdesk ---
+  
     "IT Support":           "Helpdesk",
 
     "ERP/CRM Engineer":     "IT - Khác",
     "Solution Architect":   "IT - Khác",
 
-    # --- Kinh doanh (Thêm nhóm theo xu hướng tuyển dụng) ---
+
     "IT Sales":             "IT - Khác", 
 }
-IT_TITLES: frozenset[str] = frozenset(JOB_CATEGORY_MAP.keys()) - {"Designer"}
+IT_TITLES: frozenset[str] = frozenset(JOB_CATEGORY_MAP.keys())
 
 JOB_TITLE_MAP: dict[str, list[str]] = {
 
@@ -634,12 +616,12 @@ JOB_TITLE_MAP: dict[str, list[str]] = {
         "triển khai giải pháp", "chief architect","solution designer"
     ],
     "Designer": [
-        "designer", "thiết kế", "ui/ux",
-        "ux designer", "ui designer",
-        "graphic", "đồ họa",
-        "art director", "artist",
-        "motion graphic", "photoshop"
-    ],
+    "ui/ux", "ux/ui", "ui designer", "ux designer",
+    "ux researcher", "product designer",
+    "game designer", "game design",
+    "figma", "adobe xd", "sketch",
+    "interaction design", "design system",
+],
     "ERP/CRM Engineer": [
         "erp", "sap", "odoo",
         "salesforce", "crm developer",
@@ -729,9 +711,6 @@ ROLE_DOMAIN_TO_TITLE: dict[tuple, str] = {
     ("support", None): "IT Support",
 }
 
-# ==============================================================================
-# 5. CERTIFICATIONS & SKILLS
-# ==============================================================================
 
 CERT_KW: list[str] = [
     # Cloud
@@ -994,9 +973,7 @@ MAJOR_MAP: list[tuple[str, list[str]]] = [
     ("Logistics - Quản lý chuỗi cung ứng",
      ["logistics", "xuất nhập khẩu", "quản lý chuỗi cung ứng"]),
 ]
-# ==============================================================================
-# THÊM VÀO lookups.py — sau MAJOR_MAP, trước phần "6. VIETNAMWORKS"
-# ==============================================================================
+
 
 NON_IT_TITLE_MAP: list[tuple[list[str], str]] = [
 
@@ -1145,10 +1122,10 @@ NON_IT_TITLE_MAP: list[tuple[list[str], str]] = [
     (["bảo trì", "maintenance"],                                 "Maintenance Executive"),
     (["vận hành", "operator", "production operator"],            "Production Operator"),
     (["sản xuất", "manufacturing"],                              "Manufacturing Executive"),
-
+    (["graphic designer", "graphic design", "thiết kế đồ họa","đồ họa", "logo", "poster", "banner", "brochure","motion graphic", "nội thất", "interior designer",
+  "thời trang", "fashion designer"],                       "Graphic Designer"),
     # ── Design (Graphic / Visual — non-digital) ──────────────────────────────
     (["art director"],                                            "Art Director"),
-    (["graphic designer", "thiết kế đồ họa"],                   "Graphic Designer"),
     (["thiết kế", "designer"],                                   "Designer"),
 
     # ── F&B / Hospitality ────────────────────────────────────────────────────
@@ -1177,9 +1154,7 @@ NON_IT_TITLE_MAP: list[tuple[list[str], str]] = [
     (["chuyên viên", "specialist", "executive officer"],         "Specialist"),
     (["nhân viên", "staff", "officer"],                          "Staff"),
 ]
-# ==============================================================================
-# 6. VIETNAMWORKS — ID → Text
-# ==============================================================================
+
 
 VW_JOB_TYPE: dict[str, str] = {
     "1": "Toàn thời gian",
@@ -1222,10 +1197,6 @@ VW_COMPANY_SIZE: dict[str, str] = {
     "10": "Hơn 50.000",
 }
 
-
-# ==============================================================================
-# 7. ITVIEC
-# ==============================================================================
 
 ITVIEC_WORK_MODE_MAP: dict[str, str] = {
     "at office": "Onsite",

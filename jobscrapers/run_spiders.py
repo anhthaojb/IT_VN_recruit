@@ -8,12 +8,12 @@ def main():
 
     settings = get_project_settings()
     settings.set("CRAWL_MODE", mode)
-
+    settings.set("CLOSESPIDER_ERRORCOUNT", 1)
     process = CrawlerProcess(settings)
 
     SPIDERS = [
         "topcv",
-        # "careerlink",
+        "careerlink",
         "careerviet",
         "joboko",
          "jobsgo",
@@ -26,7 +26,6 @@ def main():
         process.crawl(spider_name)
 
     process.start()  # block cho đến khi tất cả xong
-
 
 if __name__ == "__main__":
     main()

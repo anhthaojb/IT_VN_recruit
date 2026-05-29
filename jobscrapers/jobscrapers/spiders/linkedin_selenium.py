@@ -1,3 +1,4 @@
+
 import time
 import os
 import re
@@ -26,15 +27,6 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from jobscrapers.pipelines import RunTracker, clean_dict, save_to_db, get_db_connection
-
-try:
-    from ai_processor import process_linkedin_item
-    AI_ENABLED = True
-    print("✅ AI processor loaded")
-except Exception:
-    AI_ENABLED = False
-    print("⚠️  ai_processor không tìm thấy — chạy không có AI")
-
 # ===== CLI =====
 parser = argparse.ArgumentParser()
 parser.add_argument("--mode", default="daily", choices=["daily", "full"])
@@ -43,7 +35,7 @@ if unknown and unknown[0] in ["daily", "full"]:
     args.mode = unknown[0]
 
 # ===== CONFIG =====
-MAX_JOBS_PER_KEYWORD = 30  # KPI: chỉ tính job MỚI
+MAX_JOBS_PER_KEYWORD = 5
 JOB_DETAIL_WAIT      = 12
 MIN_ABOUT_JOB_CHARS  = 200
 DAILY_MAX_AGE_DAYS   = 3
@@ -78,10 +70,8 @@ KEYWORDS_BY_CATEGORY = {
     ],
 }
 
-# ===== COOKIE =====
 COOKIE_FILE = pathlib.Path("data") / "linkedin_cookies.json"
 
-# ===== SELECTORS =====
 SEL_JOB_CARDS = [
     "div[data-job-id]",
     "div.job-card-container",
@@ -109,36 +99,28 @@ TIME_PAT = re.compile(
     r"(?:reposted\s+)?(?:\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago|just now)",
     re.IGNORECASE,
 )
-LOC_PAT = re.compile(r".+,.+")
+LOC_PAT   = re.compile(r".+,.+")
+NOISE_PAT = re.compile(
+    r"people clicked apply|responses managed|actively recruiting",
+    re.IGNORECASE,
+)
 
 
 # =========================================================
 #  URL Normalization
-#  LinkedIn URL thường có dạng:
-#    /jobs/search/?currentJobId=123&keywords=...   (search page)
-#    /jobs/view/123/                               (detail page)
-#  Cần chuẩn hóa về 1 dạng để so sánh đúng với DB.
 # =========================================================
 
 def _normalize_li_url(url: str) -> str:
-    """
-    Trích jobId từ URL LinkedIn và trả về URL chuẩn dạng:
-      https://www.linkedin.com/jobs/view/{jobId}/
-    Nếu không tìm thấy jobId → trả về url gốc (stripped query).
-    """
     if not url:
         return url
-    # Thử lấy từ path: /jobs/view/4352402798/
     m = re.search(r"/jobs/view/(\d+)", url)
     if m:
         return f"https://www.linkedin.com/jobs/view/{m.group(1)}/"
-    # Thử lấy từ query param: ?currentJobId=4352402798
     parsed = urlparse(url)
-    qs = parse_qs(parsed.query)
+    qs     = parse_qs(parsed.query)
     job_id = qs.get("currentJobId", [None])[0]
     if job_id:
         return f"https://www.linkedin.com/jobs/view/{job_id}/"
-    # Fallback: bỏ query string
     return url.split("?")[0]
 
 
@@ -160,8 +142,9 @@ def wait_any_css(driver, css_selectors, timeout=10):
             els = driver.find_elements(By.CSS_SELECTOR, sel)
             if els:
                 return sel, els
-        time.sleep(0.3)  # poll 0.3s thay vì 0.5s
+        time.sleep(0.3)
     return None, []
+
 
 def find_first(driver, selectors_list, timeout=8):
     wait = WebDriverWait(driver, timeout)
@@ -175,18 +158,22 @@ def find_first(driver, selectors_list, timeout=8):
     return None
 
 
-# def ensure_db_connection(cur, conn):
-#     try:
-#         conn.ping(reconnect=True, attempts=3, delay=2)
-#     except Exception as e:
-#         print(f"  ⚠️  DB reconnect failed: {e}")
 def ensure_db_connection(cur, conn):
+    """
+    [THAY ĐỔI 2] psycopg2 không có .ping() — dùng SELECT 1.
+    Trả về (cur, conn) mới nếu connection chết.
+    """
     try:
-        conn.ping(reconnect=True, attempts=3, delay=2)
-        return cur  # connection vẫn sống
+        cur.execute("SELECT 1")
+        return cur, conn
     except Exception as e:
-        print(f"  ⚠️  DB reconnect failed: {e}")
-        return cur
+        print(f"  ⚠️  DB reconnect: {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn_new, cur_new = get_db_connection()
+        return cur_new, conn_new
 
 
 def _is_old_linkedin(posted_text: str) -> bool:
@@ -206,24 +193,6 @@ def _is_old_linkedin(posted_text: str) -> bool:
     }.get(unit, 0)
     return age_days > DAILY_MAX_AGE_DAYS
 
-
-def _enrich_with_ai(item: dict) -> dict:
-    if not AI_ENABLED:
-        item["job_description"] = item.get("raw_about_job")
-        item["job_requirement"] = None
-        return item
-    try:
-        enriched = process_linkedin_item(item)
-        if not enriched.get("job_description"):
-            enriched["job_description"] = item.get("raw_about_job")
-        return enriched
-    except Exception as e:
-        print(f"    ⚠️  AI error: {e} — fallback về raw_about_job")
-        item["job_description"] = item.get("raw_about_job", None)
-        item["job_requirement"] = None
-        return item
-
-
 # =========================================================
 #  Driver + Login
 # =========================================================
@@ -233,7 +202,6 @@ def init_driver():
     opts.add_argument("--start-maximized")
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--lang=vi-VN,vi;q=0.9,en-US;q=0.8")
-
     driver = uc.Chrome(options=opts, driver_executable_path=chromedriver_autoinstaller.install())
     driver.set_page_load_timeout(60)
     driver.set_script_timeout(20)
@@ -328,19 +296,18 @@ def login(driver):
 
     driver.get("https://www.linkedin.com/jobs")
     time.sleep(3)
-
     if not _is_logged_in(driver):
         raise Exception(f"❌ Chưa login được — URL: {driver.current_url}")
-
     save_cookies(driver)
     print(f"✅ Đăng nhập thành công — {driver.current_url}")
 
 
 # =========================================================
-#  Parse job detail
+#  Parse job detail  (không đổi)
 # =========================================================
+
 def parse_job(driver, keyword, category):
-    # Job title
+    raw_about_job = ""
     job_title = ""
     for sel in [
         "h1.job-details-jobs-unified-top-card__job-title",
@@ -353,8 +320,6 @@ def parse_job(driver, keyword, category):
     if not job_title:
         return None
 
-    # Description — đợi thực sự có nội dung thay vì sleep cứng
-    raw_about_job = None
     DESC_SELS = [
         "div#job-details",
         "div.jobs-description__content",
@@ -362,7 +327,6 @@ def parse_job(driver, keyword, category):
         "article.jobs-description",
     ]
     try:
-        # Đợi element xuất hiện và có text đủ dài
         WebDriverWait(driver, JOB_DETAIL_WAIT).until(
             lambda d: any(
                 el.text.strip() and len(el.text.strip()) > 50
@@ -386,21 +350,22 @@ def parse_job(driver, keyword, category):
         print(f"    ⚠️  Detail quá ngắn ({chars} chars) — skip")
         return None
 
-    # Location & posted time
     location = job_posted_at = None
     tertiary = driver.find_elements(
         By.CSS_SELECTOR,
         "div.job-details-jobs-unified-top-card__tertiary-description-container "
-        "span.tvm__text--low-emphasis",
+        "span.tvm__text",
     )
-    tokens = [t for t in (safe_text(s) for s in tertiary) if t and t != "·"]
+    tokens = [
+        t for t in (safe_text(s) for s in tertiary)
+        if t and t not in ("·", "") and not NOISE_PAT.search(t)
+    ]
     for token in tokens:
         if not job_posted_at and TIME_PAT.search(token):
             job_posted_at = token
         elif not location and LOC_PAT.match(token) and not TIME_PAT.search(token):
             location = token
 
-    # Work mode & job type
     work_mode = job_type = None
     WORK_MODE_VALUES = {"on-site", "remote", "hybrid"}
     JOB_TYPE_VALUES  = {"full-time", "part-time", "contract", "internship", "temporary"}
@@ -417,11 +382,9 @@ def parse_job(driver, keyword, category):
             elif not job_type and any(jt in lower for jt in JOB_TYPE_VALUES):
                 job_type = text
 
-    # Company
     company_title = None
     els = driver.find_elements(
-        By.CSS_SELECTOR,
-        'a[data-view-name="job-details-about-company-name-link"]'
+        By.CSS_SELECTOR, 'a[data-view-name="job-details-about-company-name-link"]'
     )
     if els:
         company_title = els[0].text.strip()
@@ -431,41 +394,51 @@ def parse_job(driver, keyword, category):
         By.CSS_SELECTOR, "div.jobs-company__box div.t-14.mt5"
     )
     if info_divs:
-        spans = info_divs[0].find_elements(
-            By.CSS_SELECTOR, "span.jobs-company__inline-information"
-        )
-        if spans:
-            company_size = spans[0].text.strip()
-        raw_info = info_divs[0].text.strip()
-        for sp in spans:
-            raw_info = raw_info.replace(sp.text.strip(), "")
-        company_industry = raw_info.strip().strip("·").strip()
+        try:
+            spans = info_divs[0].find_elements(
+                By.CSS_SELECTOR, "span.jobs-company__inline-information"
+            )
+            if spans:
+                company_size = spans[0].text.strip()
+            try:
+                raw_info = info_divs[0].text.strip()
+            except StaleElementReferenceException:
+                raw_info = ""
+            for sp in spans:
+                try:
+                    raw_info = raw_info.replace(sp.text.strip(), "")
+                except StaleElementReferenceException:
+                    pass
+            company_industry = raw_info.strip().strip("·").strip() or None
+        except StaleElementReferenceException:
+            pass  # company info không quan trọng, bỏ qua nếu stale
 
     return {
-        "website"          : "linkedin",
-        "job_title"        : job_title,
-        "company_title"    : company_title,
-        "location"         : location,
-        "job_url"          : driver.current_url,
-        "job_posted_at"    : job_posted_at,
-        "job_deadline"     : None,
-        "work_mode"        : work_mode,
-        "job_type"         : job_type,
-        "company_size"     : company_size,
-        "company_industry" : company_industry,
-        "job_category"     : keyword,
-        "number_recruit"   : None,
-        "raw_about_job"    : raw_about_job,
-        "job_description"  : None,
-        "job_requirement"  : None,
-        "compensation"     : None,
-        "level"            : None,
-        "experience"       : None,
-        "education_level"  : None,
-        "scraped_at"       : datetime.now().isoformat(),
-        "_search_keyword"  : keyword,
-        "_category"        : category,
+        "website"         : "linkedin",
+        "job_title"       : job_title,
+        "company_title"   : company_title,
+        "location"        : location,
+        "job_url"         : driver.current_url,
+        "job_posted_at"   : job_posted_at,
+        "job_deadline"    : None,
+        "work_mode"       : work_mode,
+        "job_type"        : job_type,
+        "company_size"    : company_size,
+        "company_industry": company_industry,
+        "job_category"    : keyword,
+        "number_recruit"  : None,
+        "job_description" : raw_about_job,
+        "job_requirement" : None,
+        "compensation"    : None,
+        "level"           : None,
+        "experience"      : None,
+        "education_level" : None,
+        "scraped_at"      : datetime.now().isoformat(),
+        "_search_keyword" : keyword,
+        "_category"       : category,
     }
+
+
 # =========================================================
 #  Core scrape
 # =========================================================
@@ -475,45 +448,35 @@ def _get_cards(driver):
 
 
 def _click_card_by_index(driver, index):
-    """
-    Click card và đợi detail panel load nội dung MỚI.
-    Trả về job_id của card vừa click (hoặc None nếu thất bại).
-    """
     for attempt in range(3):
         try:
             _, cards = _get_cards(driver)
             if index >= len(cards):
                 return None
-            card = cards[index]
-
-            # Lấy job_id từ card để verify detail đã đổi
+            card   = cards[index]
             job_id = (
                 card.get_attribute("data-job-id")
                 or card.get_attribute("data-occludable-job-id")
                 or ""
             )
-
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
             time.sleep(0.3)
             driver.execute_script("arguments[0].click();", card)
-
             if job_id:
-                # Đợi URL chứa job_id mới — chắc chắn detail đã switch
                 try:
                     WebDriverWait(driver, 10).until(
                         lambda d: job_id in d.current_url
                         or job_id in d.page_source[:3000]
                     )
                 except Exception:
-                    pass  # fallback: vẫn tiếp tục, wait_any_css sẽ xử lý
-
+                    pass
             return job_id or True
-
         except StaleElementReferenceException:
             time.sleep(0.5)
         except Exception:
             return None
     return None
+
 
 def _click_next_page(driver):
     next_btn = find_first(driver, SEL_NEXT_PAGE, timeout=5)
@@ -527,6 +490,7 @@ def _click_next_page(driver):
     except Exception:
         return False
 
+
 def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracker):
     url = (
         f"https://www.linkedin.com/jobs/search/"
@@ -537,9 +501,7 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
     except TimeoutException:
         driver.execute_script("window.stop();")
 
-    # Giảm từ 6-12s → 3-6s, đủ để LinkedIn load
     time.sleep(random.uniform(3, 6))
-
     print(f"\n🔍 [{category}] {keyword!r} | mode={mode}")
 
     current = driver.current_url
@@ -571,7 +533,6 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
             if count_new >= MAX_JOBS_PER_KEYWORD or stop_keyword:
                 break
 
-            # Click và đợi detail thực sự load job mới
             clicked = _click_card_by_index(driver, card_index)
             if not clicked:
                 _, cards_now = _get_cards(driver)
@@ -604,25 +565,21 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
                 break
 
             seen_urls.add(normalized_url)
-            raw["job_url"] = normalized_url
+            raw["job_url"]         = normalized_url
+            raw["job_requirement"] = None   
 
-            enriched = _enrich_with_ai(raw)
-            if enriched.get("job_description"):
-                enriched["raw_about_job"] = None
-
-            ensure_db_connection(cur, conn)
-            cleaned = clean_dict(enriched)
+            cur, conn = ensure_db_connection(cur, conn)
+            cleaned = clean_dict(raw)
             ok, status = save_to_db(cur, conn, cleaned)
             tracker.record(status, cleaned)
-
             if status == "new":
                 count_new += 1
-                print(f"    ✅ MỚI     [{count_new}] {cleaned.get('job_title')} @ {cleaned.get('company_title')}")
+                print(f"    ✅ MỚI [{count_new}] {cleaned.get('job_title')} @ {cleaned.get('company_title')}")
             elif status == "updated":
                 count_updated += 1
-                print(f"    🔄 UPDATED [{count_updated}] {cleaned.get('job_title')} @ {cleaned.get('company_title')}")
+                print(f"    🔄 UPDATED [{count_updated}] {cleaned.get('job_title')}")
             elif status == "duplicate":
-                print(f"    ⏭️  Không đổi")
+                print("    ⏭️  Không đổi")
             else:
                 print(f"    ❌ {status.upper()}")
 
@@ -641,28 +598,30 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
             if anchor:
                 WebDriverWait(driver, 10).until(EC.staleness_of(anchor))
             wait_any_css(driver, SEL_JOB_CARDS, timeout=8)
-            time.sleep(0.5)  # giảm từ 1s → 0.5s
+            time.sleep(0.5)
         except Exception:
             time.sleep(2)
 
         page += 1
 
     return count_new, count_updated
+
+
 # =========================================================
 #  Main
 # =========================================================
 
 def main():
-    driver = init_driver()
+    driver  = init_driver()
     conn = cur = None
-    tracker = None     
+    tracker  = None
 
     def _exit(sig, frame):
         print("\n⛔ Ctrl+C — đóng kết nối...")
-        try: driver.quit()
+        try:  driver.quit()
         except Exception: pass
         try:
-            if cur: cur.close()
+            if cur:  cur.close()
             if conn: conn.close()
         except Exception: pass
         sys.exit(0)
@@ -672,29 +631,28 @@ def main():
     try:
         login(driver)
         conn, cur = get_db_connection()
-        tracker = RunTracker(website="linkedin", cur=cur, conn=conn)
+        tracker   = RunTracker(website="linkedin", cur=cur, conn=conn)
+
+        # [THAY ĐỔI 3] PostgreSQL interval syntax
         if args.mode == "daily":
             cur.execute(
-                "SELECT job_url FROM jobs WHERE website='linkedin' "
-                "AND scraped_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)"
+                "SELECT job_url FROM staging_jobs WHERE website='linkedin' "
+                "AND scraped_at::timestamp >= NOW() - INTERVAL '30 days'"
             )
         else:
-            cur.execute("SELECT job_url FROM jobs WHERE website='linkedin'")
+            cur.execute("SELECT job_url FROM staging_jobs WHERE website='linkedin'")
 
-        # FIX: normalize tất cả URL từ DB về dạng /jobs/view/{id}/
-        # tránh mismatch khi LinkedIn trả về URL dạng /jobs/search/?currentJobId=...
         seen_urls = {_normalize_li_url(row[0]) for row in cur.fetchall()}
         print(f"✅ Loaded {len(seen_urls)} URL từ DB | mode={args.mode}")
 
-        total_new     = 0
-        total_updated = 0
-        summary       = {}
+        total_new = total_updated = 0
+        summary   = {}
 
         for category, keywords in KEYWORDS_BY_CATEGORY.items():
             summary[category] = {}
             for keyword in keywords:
                 new, updated = scrape_keyword(
-                    driver, keyword, category, seen_urls, cur, conn, args.mode,tracker
+                    driver, keyword, category, seen_urls, cur, conn, args.mode, tracker
                 )
                 summary[category][keyword] = (new, updated)
                 total_new     += new
@@ -705,7 +663,7 @@ def main():
 
         print(f"\n{'='*55}")
         print(f"🎉 HOÀN THÀNH | mode={args.mode}")
-        print(f"   ✅ Job mới    : {total_new}   ← KPI")
+        print(f"   ✅ Job mới    : {total_new}")
         print(f"   🔄 Job updated: {total_updated}")
         print(f"{'='*55}")
         for cat, kw_counts in summary.items():
@@ -716,19 +674,19 @@ def main():
                 print(f"    • {kw!r}: {n} mới, {u} updated")
 
     finally:
-        if tracker:         
-            try:
-                tracker.finish()
+        if tracker:
+            try:  tracker.finish()
             except Exception as e:
-                print(f"⚠️ tracker.finish() lỗi: {e}")
+                print(f"⚠ tracker.finish() lỗi: {e}")
         try:
-            if cur: cur.close()
+            if cur:  cur.close()
             if conn: conn.close()
         except Exception: pass
-        try: 
+        try:
+            driver.service.process.kill()  # kill process trước
             driver.quit()
-        except Exception: pass
-
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()

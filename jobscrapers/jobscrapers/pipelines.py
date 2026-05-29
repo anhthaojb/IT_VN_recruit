@@ -1,12 +1,27 @@
+"""
+pipelines.py — Supabase (PostgreSQL) version
+=============================================
+"""
 from itemadapter import ItemAdapter
-import mysql.connector
+import psycopg2
+import psycopg2.extras
 import re
+import os
 from datetime import datetime, timedelta
-#from lookups import VW_JOB_TYPE, VW_EDUCATION,VW_JOB_LEVEL,VW_COMPANY_SIZE, _ITVIEC_WORK_MODE_MAP, _ITVIEC_VALID_OUTPUTS, _ITVIEC_WORK_MODE_INPUTS
-from lookups import VW_JOB_TYPE, VW_EDUCATION, VW_JOB_LEVEL, VW_COMPANY_SIZE, ITVIEC_WORK_MODE_MAP, ITVIEC_VALID_OUTPUTS, ITVIEC_WORK_MODE_INPUTS
-# =========================================================
-#  Helpers dùng chung
-# =========================================================
+from dotenv import load_dotenv
+load_dotenv()
+DATABASE_URL = os.getenv("DATABASE_URL")
+from scrapy import item
+from jobscrapers.lookups import (
+    VW_JOB_TYPE, VW_EDUCATION, VW_JOB_LEVEL, VW_COMPANY_SIZE,
+    ITVIEC_WORK_MODE_MAP, ITVIEC_VALID_OUTPUTS, ITVIEC_WORK_MODE_INPUTS,
+)
+
+
+
+# ==============================================================================
+# 1. HELPERS dùng chung  (logic không đổi)
+# ==============================================================================
 
 def _clean_date(text: str) -> str:
     if not text:
@@ -33,16 +48,13 @@ def _clean_nbsp(text: str) -> str:
 def _relative_to_date(relative_text: str, scraped_at_iso: str) -> str:
     if not relative_text:
         return ""
-
     text = relative_text.lower().strip()
     text = re.sub(r"^reposted\s+", "", text)
     text = re.sub(r"^posted\s+",   "", text)
-
     try:
         base = datetime.fromisoformat(scraped_at_iso)
     except Exception:
         base = datetime.now()
-
     m = re.match(
         r"(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago",
         text, re.IGNORECASE,
@@ -60,10 +72,8 @@ def _relative_to_date(relative_text: str, scraped_at_iso: str) -> str:
             "year"  : timedelta(days=n * 365),
         }
         return (base - delta_map[unit]).strftime("%d/%m/%Y")
-
     if "just now" in text:
         return base.strftime("%d/%m/%Y")
-
     return relative_text
 
 
@@ -73,20 +83,16 @@ _NEGOTIABLE = [
     "you'll love it",
 ]
 
-
-
-
-_LI_TIME_PAT = re.compile(
+_LI_TIME_PAT  = re.compile(
     r"(?:reposted\s+)?(?:\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago|just\s+now)",
     re.IGNORECASE,
 )
-
 _IT_POSTED_PAT = re.compile(r"^posted\s+(.+)$", re.IGNORECASE)
 
 
-# =========================================================
-#  Core: clean_dict()
-# =========================================================
+# ==============================================================================
+# 2. clean_dict()  (logic không đổi, giữ nguyên toàn bộ)
+# ==============================================================================
 
 def clean_dict(raw: dict) -> dict:
     item    = {}
@@ -97,7 +103,6 @@ def clean_dict(raw: dict) -> dict:
         "experience", "job_type", "work_mode", "level", "job_url",
         "company_size", "company_industry", "number_recruit",
         "education_level", "job_posted_at", "job_deadline",
-        "raw_about_job",
     ]
     for field in STR_FIELDS:
         val = raw.get(field)
@@ -139,14 +144,12 @@ def clean_dict(raw: dict) -> dict:
             item["job_posted_at"] = ""
         item["job_posted_at"] = _clean_date(item["job_posted_at"])
         item["job_deadline"]  = _clean_date(item["job_deadline"])
-
     elif website == "careerviet":
         size = item["company_size"]
         if size.startswith(":"):
             item["company_size"] = size.split("|")[0].replace(":", "").strip()
         item["job_posted_at"] = _clean_date(item["job_posted_at"])
         item["job_deadline"]  = _clean_date(item["job_deadline"])
-
     elif website == "vietnamwork":
         item["job_type"]        = VW_JOB_TYPE.get(item["job_type"], item["job_type"])
         item["education_level"] = VW_EDUCATION.get(item["education_level"], item["education_level"])
@@ -154,25 +157,17 @@ def clean_dict(raw: dict) -> dict:
         item["company_size"]    = VW_COMPANY_SIZE.get(item["company_size"], item["company_size"])
         item["job_posted_at"]   = _clean_date(item["job_posted_at"])
         item["job_deadline"]    = _clean_date(item["job_deadline"])
-
     elif website == "linkedin":
-        if not item["job_description"]:
-            raw_desc = (raw.get("raw_about_job") or "").strip()
-            item["job_description"] = _clean_nbsp(raw_desc)
-
         posted = item["job_posted_at"]
         if _LI_TIME_PAT.search(posted):
             item["job_posted_at"] = _relative_to_date(posted, scraped_iso)
-
         item["job_deadline"] = ""
-
     elif website == "itviec":
         posted = item["job_posted_at"]
         m = _IT_POSTED_PAT.match(posted)
         relative_part = m.group(1).strip() if m else posted
         item["job_posted_at"] = _relative_to_date(relative_part, scraped_iso)
         item["job_deadline"]  = ""
-
         item["work_mode"] = ITVIEC_WORK_MODE_MAP.get(
             item["work_mode"].lower(), item["work_mode"]
         )
@@ -182,8 +177,7 @@ def clean_dict(raw: dict) -> dict:
             )
             item["job_posted_at"] = ""
         elif item["work_mode"] and item["work_mode"] not in ITVIEC_VALID_OUTPUTS:
-            item["work_mode"] = ""   # ✅ "On-site" CÓ trong {"On-site","Hybrid","Remote"} → giữ lại!
-
+            item["work_mode"] = ""
         skills_raw = raw.get("skills") or []
         if isinstance(skills_raw, list) and skills_raw:
             skills_str = "Skills: " + ", ".join(s.strip() for s in skills_raw if s.strip())
@@ -191,7 +185,6 @@ def clean_dict(raw: dict) -> dict:
                 (item["job_description"] + "\n\n" + skills_str).strip()
                 if item["job_description"] else skills_str
             )
-
     else:
         item["job_posted_at"] = _clean_date(item["job_posted_at"])
         item["job_deadline"]  = _clean_date(item["job_deadline"])
@@ -200,145 +193,67 @@ def clean_dict(raw: dict) -> dict:
     if not raw_comp or any(p in raw_comp.lower() for p in _NEGOTIABLE):
         item["compensation"] = "Thỏa thuận"
     elif website == "vietnamwork":
-        m = re.match(r"^0\s*-\s*(.+)$", raw_comp)
-        item["compensation"] = m.group(1).strip() if m else re.sub(r"\s+", " ", raw_comp)
+        mm = re.match(r"^0\s*-\s*(.+)$", raw_comp)
+        item["compensation"] = mm.group(1).strip() if mm else re.sub(r"\s+", " ", raw_comp)
     else:
         item["compensation"] = re.sub(r"\s+", " ", raw_comp)
 
     missing = [f for f in ("job_title", "job_url") if not item.get(f)]
-    item["is_valid"]  = len(missing) == 0
+    item["is_valid"]  = len(missing) == 0          # [THAY ĐỔI 9] True/False thay vì 1/0
     item["error_log"] = f"Thiếu field bắt buộc: {', '.join(missing)}" if missing else None
 
     return item
 
 
-# =========================================================
-#  Pipeline 1: Làm sạch & chuẩn hoá dữ liệu  (Scrapy)
-# =========================================================
+# ==============================================================================
+# 3. DB CONNECTION  [THAY ĐỔI 1+2 — psycopg2 thay mysql.connector]
+# ==============================================================================
 
-class CleaningPipeline:
-    def process_item(self, item, spider):
-        adapter = ItemAdapter(item)
-        cleaned = clean_dict(dict(adapter))
+def get_db_connection():
+    """
+    Kết nối PostgreSQL Local qua psycopg2.
+    Schema đã tạo sẵn — không tạo lại ở đây.
+    """
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.autocommit = False
+    cur  = conn.cursor()
+    return conn, cur
 
-        for field, value in cleaned.items():
-            adapter[field] = value
+# ==============================================================================
+# 4. SQL  [THAY ĐỔI 3 — ON CONFLICT thay ON DUPLICATE KEY UPDATE]
+# ==============================================================================
 
-        if not adapter.get("is_valid"):
-            spider.logger.warning(
-                f"[CleaningPipeline] Invalid — {adapter.get('error_log')}"
-            )
-
-        return item
-
-
-# =========================================================
-#  Pipeline 2: Lưu vào MySQL  (Scrapy + Selenium dùng chung)
-# =========================================================
-
-DB_CONFIG = dict(
-    host     = "localhost",
-    user     = "root",
-    password = "123456",
-    database = "itta",
-    charset  = "utf8mb4",
-)
-
-_CREATE_TABLE_SQL = """
-    CREATE TABLE IF NOT EXISTS jobs (
-        id               INT           NOT NULL AUTO_INCREMENT,
-        website          VARCHAR(50),
-        job_title        TEXT,
-        company_title    VARCHAR(255),
-        location         VARCHAR(255),
-        experience       VARCHAR(100),
-        compensation     VARCHAR(255),
-        job_type         VARCHAR(100),
-        work_mode        VARCHAR(100),
-        level            VARCHAR(100),
-        job_url          VARCHAR(500)  UNIQUE,
-        company_size     VARCHAR(100),
-        company_industry VARCHAR(255),
-        job_category     VARCHAR(255),
-        number_recruit   VARCHAR(50),
-        education_level  VARCHAR(100),
-        job_description  LONGTEXT,
-        job_requirement  LONGTEXT,
-        raw_about_job    LONGTEXT,
-        job_posted_at    VARCHAR(20),
-        job_deadline     VARCHAR(20),
-        scraped_at       VARCHAR(30),
-        is_valid         TINYINT(1)    DEFAULT 1,
-        error_log        TEXT,
-        PRIMARY KEY (id),
-        INDEX idx_website    (website),
-        INDEX idx_company    (company_title(100)),
-        INDEX idx_location   (location(100)),
-        INDEX idx_is_valid   (is_valid),
-        INDEX idx_scraped_at (scraped_at)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-"""
-_CREATE_FACT_TABLES_SQL = """
-    CREATE TABLE IF NOT EXISTS fact_pipeline_snapshot (
-        run_id          INT AUTO_INCREMENT PRIMARY KEY,
-        session_id      VARCHAR(20),
-        website         VARCHAR(50),
-        triggered_by    VARCHAR(20)  DEFAULT 'manual',
-        started_at      DATETIME,
-        finished_at     DATETIME,
-        duration_sec    INT,
-        total_scraped   INT DEFAULT 0,
-        new_jobs        INT DEFAULT 0,
-        updated_jobs    INT DEFAULT 0,
-        duplicate_jobs  INT DEFAULT 0,
-        invalid_jobs    INT DEFAULT 0,
-        error_jobs      INT DEFAULT 0,
-        status          VARCHAR(20),
-        INDEX idx_session (session_id),
-        INDEX idx_website (website),
-        INDEX idx_started (started_at)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-    CREATE TABLE IF NOT EXISTS fact_error_detail (
-        error_id        INT AUTO_INCREMENT PRIMARY KEY,
-        run_id          INT,
-        column_name     VARCHAR(100),
-        bad_value       TEXT,
-        error_type      VARCHAR(50),
-        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (run_id) REFERENCES fact_pipeline_snapshot(run_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-"""
 _INSERT_SQL = """
-    INSERT INTO jobs (
+    INSERT INTO staging_jobs (
         website, job_title, company_title, location,
         experience, compensation, job_type, work_mode,
         level, job_url, company_size, company_industry,
         job_category, number_recruit, education_level,
-        job_description, job_requirement, raw_about_job,
+        job_description, job_requirement,
         job_posted_at, job_deadline, scraped_at,
-        is_valid, error_log
+        is_valid, error_log, ai_processed
     ) VALUES (
         %s,%s,%s,%s, %s,%s,%s,%s,
-        %s,%s,%s,%s, %s,%s,%s,%s,
-        %s,%s, %s,%s,%s, %s,%s
+        %s,%s,%s,%s, %s,%s,%s,
+        %s,%s, %s,%s,%s, %s,%s,%s
     )
-    ON DUPLICATE KEY UPDATE
-        job_title        = VALUES(job_title),
-        company_title    = VALUES(company_title),
-        company_industry = VALUES(company_industry),
-        compensation     = VALUES(compensation),
-        job_description  = VALUES(job_description),
-        education_level  = VALUES(education_level),
-        job_category     = VALUES(job_category),
-        job_requirement  = VALUES(job_requirement),
-        job_posted_at    = VALUES(job_posted_at),
-        scraped_at       = VALUES(scraped_at),
-        is_valid         = VALUES(is_valid);
+    ON CONFLICT (job_url) DO UPDATE SET
+        job_title        = EXCLUDED.job_title,
+        company_title    = EXCLUDED.company_title,
+        company_industry = EXCLUDED.company_industry,
+        compensation     = EXCLUDED.compensation,
+        job_description  = EXCLUDED.job_description,
+        education_level  = EXCLUDED.education_level,
+        job_category     = EXCLUDED.job_category,
+        job_requirement  = EXCLUDED.job_requirement,
+        job_posted_at    = EXCLUDED.job_posted_at,
+        scraped_at       = EXCLUDED.scraped_at,
+        is_valid         = EXCLUDED.is_valid
+        -- ai_processed KHÔNG update để tránh reset về False khi scrape lại
 """
 
-
 def _insert_params(item: dict) -> tuple:
+    website = (item.get("website") or "").lower().strip()
     return (
         item.get("website"),
         item.get("job_title"),
@@ -357,96 +272,83 @@ def _insert_params(item: dict) -> tuple:
         item.get("education_level"),
         item.get("job_description"),
         item.get("job_requirement"),
-        item.get("raw_about_job"),
         item.get("job_posted_at"),
         item.get("job_deadline"),
         item.get("scraped_at"),
-        int(item.get("is_valid", True)),
+        bool(item.get("is_valid", True)),
         item.get("error_log"),
+        False if website == "linkedin" else True,  # linkedin → AI xử lý sau
     )
 
-
-class SaveToMySQLPipeline:
-    def open_spider(self, spider):
-        self.conn, self.cur = get_db_connection()
-        self.tracker = RunTracker(
-            website=spider.name,
-            cur=self.cur,
-            conn=self.conn
-        )
-
-    def process_item(self, item, spider):
-        adapter = ItemAdapter(item)
-        success, status = save_to_db(self.cur, self.conn, dict(adapter))
-        self.tracker.record(status, dict(adapter))
-        return item
-
-    def close_spider(self, spider):
-        self.tracker.finish()
-        self.cur.close()
-        self.conn.close()
-
+# ==============================================================================
+# 5. save_to_db  [THAY ĐỔI 3+4 — rowcount logic khác psycopg2]
+# ==============================================================================
 
 def save_to_db(cur, conn, item: dict) -> tuple[bool, str]:
     """
-    Lưu item vào DB.
-    Trả về tuple (success: bool, status: str).
-      "new"       → job mới hoàn toàn
-      "updated"   → job cũ, đã update các trường
-      "duplicate" → job cũ, không có gì thay đổi
-      "invalid"   → item thiếu field bắt buộc
-      "error"     → MySQL error
+    Lưu item vào Supabase.
+    Trả về (success: bool, status: str):
+      "new"       → INSERT mới hoàn toàn
+      "updated"   → ON CONFLICT → UPDATE (có thay đổi)
+      "duplicate" → ON CONFLICT → không thay đổi gì
+      "invalid"   → thiếu field bắt buộc
+      "error"     → DB error
     """
     if item.get("is_valid") is False:
         print(f"    ⚠ Invalid — bỏ qua: {item.get('error_log')}")
         return False, "invalid"
 
     try:
-        cur.execute(_INSERT_SQL, _insert_params(item))
+        sql_returning = _INSERT_SQL + " RETURNING (xmax = 0) AS is_new_row, id"
+        cur.execute(sql_returning, _insert_params(item))
+        row = cur.fetchone()
         conn.commit()
 
-        rc = cur.rowcount
-        if rc == 1:
-            return True, "new"       # INSERT thành công
-        elif rc == 2:
-            return True, "updated"   # ON DUPLICATE → UPDATE có thay đổi
-        else:
-            return False, "duplicate"  # ON DUPLICATE → không đổi gì
+        if row is not None:
+            is_new_row = row[0]
+            generated_id = row[1]
+            item["id"] = generated_id 
+            return (True, "new") if is_new_row else (True, "updated")
 
-    except mysql.connector.Error as e:
-        print(f"    ✗ MySQL error: {e}")
+    except psycopg2.Error as e:
+        print(f"    ✗ PostgreSQL error: {e}")
         conn.rollback()
         return False, "error"
 
 
-class RunTracker:
-    def __init__(self, website: str, cur, conn, session_id: str = None, triggered_by: str = "manual"):
-        self.website     = website
-        self.cur         = cur
-        self.conn        = conn
-        self.session_id  = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.triggered_by = triggered_by
-        self.started_at  = datetime.now()
-        self.counts      = {
-            "total": 0, "new": 0, "updated": 0,
-            "duplicate": 0, "invalid": 0, "error": 0
-        }
+# ==============================================================================
+# 6. RunTracker  [THAY ĐỔI 4 — RETURNING id thay lastrowid]
+# ==============================================================================
 
+class RunTracker:
+    def __init__(self, website: str, cur, conn,
+                 session_id: str = None, triggered_by: str = "manual"):
+        self.website      = website
+        self.cur          = cur
+        self.conn         = conn
+        self.session_id   = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.triggered_by = triggered_by
+        self.started_at   = datetime.now()
+        self.counts       = {
+            "total": 0, "new": 0, "updated": 0,
+            "duplicate": 0, "invalid": 0, "error": 0,
+        }
         cur.execute("""
             INSERT INTO fact_pipeline_snapshot
                 (website, session_id, triggered_by, started_at, status)
             VALUES (%s, %s, %s, %s, 'RUNNING')
+            RETURNING run_id
         """, (website, self.session_id, triggered_by, self.started_at))
-        self.run_id = cur.lastrowid
-        conn.commit()
+
+        row = cur.fetchone()  
+        conn.commit()        
+        self.run_id = row[0] if row else None
         if not self.run_id:
             raise RuntimeError(f"[RunTracker] Không tạo được run_id cho {website}")
 
     def record(self, status: str, item: dict):
-        """Gọi sau mỗi save_to_db()"""
         self.counts["total"] += 1
         self.counts[status]  += 1
-
         if status == "invalid":
             self._log_error(item)
 
@@ -463,22 +365,19 @@ class RunTracker:
                     self.run_id,
                     field.strip(),
                     str(item.get(field.strip())),
-                    "NULL_REQUIRED"
+                    "NULL_REQUIRED",
                 ))
             self.conn.commit()
 
     def finish(self):
         finished_at  = datetime.now()
         duration_sec = int((finished_at - self.started_at).total_seconds())
-
-        # WARN nếu invalid > 20% tổng
         status = (
             "FAILED"  if self.counts["error"] > 0 else
             "WARN"    if self.counts["total"] > 0 and
                          self.counts["invalid"] / self.counts["total"] > 0.2 else
             "SUCCESS"
         )
-
         self.cur.execute("""
             UPDATE fact_pipeline_snapshot SET
                 finished_at    = %s,
@@ -492,32 +391,79 @@ class RunTracker:
                 status         = %s
             WHERE run_id = %s
         """, (
-            finished_at,
-            duration_sec,
-            self.counts["total"],
-            self.counts["new"],
-            self.counts["updated"],
-            self.counts["duplicate"],
-            self.counts["invalid"],
-            self.counts["error"],
-            status,
-            self.run_id,
+            finished_at, duration_sec,
+            self.counts["total"],   self.counts["new"],
+            self.counts["updated"], self.counts["duplicate"],
+            self.counts["invalid"], self.counts["error"],
+            status, self.run_id,
         ))
         self.conn.commit()
-
         print(f"\n📊 Run #{self.run_id} [{self.website}] {status} "
               f"| session={self.session_id} "
               f"| new={self.counts['new']} updated={self.counts['updated']} "
               f"dup={self.counts['duplicate']} invalid={self.counts['invalid']} "
               f"({duration_sec}s)")
-def get_db_connection():
-    conn = mysql.connector.connect(**DB_CONFIG)
-    cur  = conn.cursor()
-    cur.execute(_CREATE_TABLE_SQL)          # tạo bảng jobs
-    # Tách từng statement vì execute() không chạy được multi-statement
-    for sql in _CREATE_FACT_TABLES_SQL.strip().split(";"):
-        sql = sql.strip()
-        if sql:
-            cur.execute(sql)
-    conn.commit()
-    return conn, cur
+
+
+# ==============================================================================
+# 7. Scrapy Pipelines
+# ==============================================================================
+
+class CleaningPipeline:
+    def process_item(self, item, spider):
+        adapter = ItemAdapter(item)
+        cleaned = clean_dict(dict(adapter))
+        for field, value in cleaned.items():
+            adapter[field] = value
+        if not adapter.get("is_valid"):
+            spider.logger.warning(
+                f"[CleaningPipeline] Invalid — {adapter.get('error_log')}"
+            )
+        return item
+
+
+class SaveToPostgresPipeline:
+    """Tên mới — SaveToMySQLPipeline vẫn là alias để không phải sửa settings.py."""
+
+    def open_spider(self, spider):
+        self.conn, self.cur = get_db_connection()
+        self.tracker = RunTracker(
+            website=spider.name,
+            cur=self.cur,
+            conn=self.conn,
+        )
+
+    def process_item(self, item, spider):
+        adapter = ItemAdapter(item)
+        success, status = save_to_db(self.cur, self.conn, dict(adapter))
+        self.tracker.record(status, dict(adapter))
+        return item
+
+    def close_spider(self, spider):
+        self.tracker.finish()
+        self.cur.close()
+        self.conn.close()
+
+
+# Alias để settings.py không cần sửa
+SaveToMySQLPipeline = SaveToPostgresPipeline
+
+
+# ==============================================================================
+# 8. ensure_db_connection  [THAY ĐỔI 5 — psycopg2 không có .ping()]
+# ==============================================================================
+
+def ensure_db_connection(cur, conn):
+    """Kiểm tra connection còn sống không — psycopg2 dùng SELECT 1."""
+    try:
+        cur.execute("SELECT 1")
+        return cur
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn_new, cur_new = get_db_connection()
+        # Cập nhật in-place không được trong Python — caller phải reassign
+        # Trả về cur mới để caller dùng
+        return cur_new

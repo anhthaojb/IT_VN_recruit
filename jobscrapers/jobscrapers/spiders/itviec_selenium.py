@@ -1,30 +1,36 @@
 import sys
-import time
 import os
 import re
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import time
 import json
+import random
 import signal
 import argparse
-from datetime import datetime, date
+import pathlib
+from datetime import datetime
 from urllib.parse import quote_plus
 from pathlib import Path
-
-import mysql.connector
-import undetected_chromedriver as uc
+from dotenv import load_dotenv
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException
 from bs4 import BeautifulSoup
-from pipelines import RunTracker, clean_dict, get_db_connection, save_to_db
+import undetected_chromedriver as uc
 import chromedriver_autoinstaller
 chromedriver_autoinstaller.install(no_ssl=True)
+
+load_dotenv()
+_project_root = str(pathlib.Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from jobscrapers.pipelines import RunTracker, clean_dict, save_to_db, get_db_connection
 # =========================================================
 #  CONFIG
 # =========================================================
 
-MAX_JOBS_PER_KEYWORD = 10
+MAX_JOBS_PER_KEYWORD = 5
 
 KEYWORDS_BY_CATEGORY = {
     "software_dev": [
@@ -117,18 +123,6 @@ SEL_NEXT_PAGE = [
     (By.CSS_SELECTOR, "a.next_page"),
 ]
 
-# =========================================================
-#  KIỂM TRA NGÀY — dùng cho daily mode
-# =========================================================
-
-# def _is_old(posted_text: str) -> bool:
-#     if not posted_text:
-#         return False
-#     return bool(re.search(
-#         r"\d+\s+(?:day|week|month|year)s?\s+ago",
-#         posted_text,
-#         re.IGNORECASE,
-#     ))
 def _is_old(posted_text: str, max_days: int = 3) -> bool:
     m = re.search(r"(\d+)\s+(day|week|month|year)s?\s+ago", posted_text, re.IGNORECASE)
     if not m:
@@ -660,7 +654,7 @@ def main():
                 time.sleep(3)
 
         print(f"\n{'='*55}")
-        print(f"🎉 HOÀN THÀNH | mode={mode} | {total} job → MySQL")
+        print(f"🎉 HOÀN THÀNH | mode={mode} | {total} job → PostgreSQL")
         print(f"{'='*55}")
         for cat, kw_counts in summary.items():
             cat_total = sum(kw_counts.values())
