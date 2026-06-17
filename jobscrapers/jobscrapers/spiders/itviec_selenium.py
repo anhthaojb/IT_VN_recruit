@@ -17,9 +17,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 import undetected_chromedriver as uc
-import chromedriver_autoinstaller
-chromedriver_autoinstaller.install(no_ssl=True)
-
 load_dotenv()
 _project_root = str(pathlib.Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
@@ -34,72 +31,47 @@ MAX_JOBS_PER_KEYWORD = 5
 
 KEYWORDS_BY_CATEGORY = {
     "software_dev": [
-        ".NET Developer",
-        "Back End Developer",
-        "Back End Web Developer",
-        "Front End Developer",
-        "Front End Web Developer",
+        "Backend Developer",
+        "Frontend Developer",
         "Full Stack Developer",
-        "Full Stack Web Developer",
         "Java Developer",
-        "Java Web Developer",
-        "NodeJS Developer",
-        "PHP Developer",
         "Python Developer",
-        "Python Web Developer",
-        "Senior Back End Developer",
-        "Senior Front End Developer",
-        "Senior Full Stack Developer",
-        "Senior Java Developer",
+        "PHP Developer",
+        "NodeJS Developer",
+        ".NET Developer",
         "C++ Developer",
         "Embedded Engineer",
     ],
     "mobile": [
-        "Android App Developer",
+        "Mobile Developer",
         "Android Developer",
-        "Mobile Apps Developer",
         "iOS Developer",
     ],
     "architecture": [
-        "Software Architecture",
         "Solution Architect",
-        "System Engineer",
         "System Administrator",
     ],
     "management": [
-        "Bridge Project Management",
-        "Business Analysis",
-        "Leadership",
-        "Product Management",
+        "Business Analyst",
         "Product Owner",
-        "Senior Product Owner",
-        "Project Management",
+        "Project Manager",
     ],
     "design_qa": [
-        "UX UI Designer",
-        "Tester",
+        "UI UX Designer",
+        "QA Tester",
     ],
     "data": [
         "Data Analyst",
-        "Data Scientist",
         "Data Engineer",
+        "Data Scientist",
         "Business Intelligence",
         "Database Administrator",
-        "ETL Developer",
-        "Data Architect",
-        "Big Data Engineer",
-        "Analytics Engineer",
     ],
     "ai_ml": [
         "AI Engineer",
         "Machine Learning Engineer",
-        "NLP Engineer",
-        "Computer Vision Engineer",
-        "Deep Learning Engineer",
         "MLOps Engineer",
-        "Generative AI Engineer",
         "LLM Engineer",
-        "AI Research Engineer",
     ],
 }
 COOKIE_FILE = Path("data") / "itviec_cookies.json"
@@ -525,18 +497,16 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
 
     return job_count
 
-# =========================================================
-#  DRIVER & LOGIN
-# =========================================================
 
 def init_driver():
     opts = uc.ChromeOptions()
     opts.add_argument("--start-maximized")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_experimental_option(
         "prefs",
         {"profile.managed_default_content_settings.images": 2}
     )
-    return uc.Chrome(options=opts, driver_executable_path=chromedriver_autoinstaller.install())
+    return uc.Chrome(options=opts)
 
 
 

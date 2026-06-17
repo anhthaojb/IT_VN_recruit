@@ -8,12 +8,6 @@
 #   [LOCAL-2] DATABASE_URL default → local PostgreSQL
 #             (vẫn đọc từ env var DATABASE_URL nếu có)
 #
-# Flow khớp với GitHub Actions (daily_etl.yml):
-#   Step 1 — Scrapy spiders
-#   Step 2 — AI processor LinkedIn   (staging_linkedin.py)
-#   Step 3 — ETL transform + save    (file này — KHÔNG dedup, KHÔNG load DW)
-#   Step 4 — Global Dedup + Load DW  (dedup.py)
-# ==============================================================================
 
 import pathlib
 import re
@@ -58,7 +52,8 @@ from lookups import (
     CERT_KW, LANG_CERT_TO_LANG,
     SKILL_MAP,
     WORK_TYPE_MAP, WORK_MODE_MAP,
-    ROLE_WORDS, TECH_DOMAIN, ROLE_DOMAIN_TO_TITLE,
+    ROLE_WORDS, TECH_DOMAIN, ROLE_DOMAIN_TO_TITLE,COMPILED_JOB_TITLE_MAP,   # thêm
+    COMPILED_NON_IT_TITLE_MAP
 )
 
 # ==============================================================================
@@ -111,7 +106,12 @@ _COMPANY_TYPE_NORMALIZE = [
     (r'\bDoanh\s+nghiệp\s+TN\b',                    'Doanh nghiệp Tư nhân'),
     (r'\bTĐ\b',                                     'Tập đoàn'),
 ]
-
+_SUFFIX_STRIP_RE = re.compile(
+    r"\s*\b(?:capital|city|metropolitan|metropolis|metro|province"
+    r"|municipality|region|urban area|greater|district|thủ đô"
+    r"|thành phố|tỉnh|tp\.?)\b\s*",
+    re.IGNORECASE | re.UNICODE,
+)
 _CONFIDENTIAL_RE = re.compile(
     r"(?:careerlink|vietnamworks|topcv|itviec|linkedin|jobstreet|timviecnhanh)"
     r"['\s]*(?:client|'s\s+client)|confidential\s+(?:company|employer)"
@@ -244,7 +244,7 @@ def _to_date(text: str, ref_iso: str) -> date | None:
 def parse_dates(posted_raw: str, deadline_raw: str, scraped_at: str,
                 job_desc: str = "") -> dict:
     ref      = _s(scraped_at)
-    posted   = _to_date(posted_raw,   ref)
+    posted   = _to_date(posted_raw, ref)
     deadline = _to_date(deadline_raw, ref)
     if deadline is None and job_desc:
         desc_lower = _s(job_desc).lower()
@@ -259,15 +259,15 @@ def parse_dates(posted_raw: str, deadline_raw: str, scraped_at: str,
                 deadline = _to_date(m.group(1), ref)
                 if deadline:
                     break
-    if posted is None:
-        posted = deadline
+
+    # Fallback posted_at về scraped_at — không dùng deadline
     if posted is None and ref:
         try:
             posted = datetime.fromisoformat(ref.replace(" ", "T")).date()
         except Exception:
             pass
-    return {"job_posted_at_clean": posted, "job_deadline_clean": deadline}
 
+    return {"job_posted_at_clean": posted, "job_deadline_clean": deadline}
 
 _IT_EXTRA_KW: list[str] = [
     "phần mềm", "lập trình", "kỹ thuật phần mềm", "công nghệ thông tin",
@@ -290,14 +290,28 @@ _IT_TITLE_KW_FALLBACK: list[str] = [
     "blockchain", "iot", "embedded", "firmware",
 ]
 _TITLE_NOISE_PATTERNS = [
-    r"\btuyển\s*(gấp|dụng)?\b", r"\bgấp\b", r"\bremote\b",
-    r"\bfull[\s\-]?time\b", r"\bpart[\s\-]?time\b", r"\bhybrid\b",
-    r"\bonsite\b", r"\bwork\s+from\s+home\b", r"\bwfh\b",
-    r"\blương\b[^,;()\[\]]*", r"\bsalary\b[^,;()\[\]]*",
-    r"\btại\s+[\w\s]{2,30}(?=[,;()\[\]]|$)", r"\blàm\s+việc\s+tại\b[^,;()\[\]]*",
-    r"\bnhiều\s+vị\s+trí\b", r"\b\d+\s+vị\s+trí\b", r"\b\d+\s+slots?\b",
-    r"\bslot\b", r"\bvới\s+mức\s+lương\b[^,;()\[\]]*", r"\bnhiều\s+ưu\s+đãi\b",
-    r"\bưu\s+đãi\s+hấp\s+dẫn\b", r"\[.*?\]", r"\(.*?\)",
+    r"^(?:\[[^\]]*\]|\([^)]*\))\s*",    # [bất kỳ] hoặr (bất kỳ) ở ĐẦU
+    r"\s*(?:\[[^\]]*\]|\([^)]*\))\s*$", # [bất kỳ] hoặc (bất kỳ) ở CUỐI — có dấu phẩy
+    r"\btuyển\s*(gấp|dụng)?\b",
+    r"\bgấp\b",
+    r"\bremote\b",
+    r"\bfull[\s\-]?time\b",
+    r"\bpart[\s\-]?time\b",
+    r"\bhybrid\b",
+    r"\bonsite\b",
+    r"\bwork\s+from\s+home\b",
+    r"\bwfh\b",
+    r"\bnhiều\s+vị\s+trí\b",
+    r"\b\d+\s+vị\s+trí\b",
+    r"\b\d+\s+slots?\b",
+    r"\bslot\b",
+    r"\bnhiều\s+ưu\s+đãi\b",
+    r"\bưu\s+đãi\s+hấp\s+dẫn\b",
+    r"\blương\s+\d[\d\s\-–triệumk\.]+",
+    r"\bsalary\s+upto\b[^,;]*",
+    r"\bsalary\s+up\s+to\b[^,;]*",
+    r"\s*[-–]\s*(?:làm việc\s+)?tại\s+[\w\s]{2,30}$",
+    # dòng [Hưng Yên] ở cuối đã được cover bởi pattern thứ 2 → xóa đi
 ]
 _TITLE_NOISE_RES = [re.compile(p, re.IGNORECASE | re.UNICODE)
                     for p in _TITLE_NOISE_PATTERNS]
@@ -314,14 +328,18 @@ def _clean_job_title(raw: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
-
 def _detect_job_title(clean_title: str) -> str | None:
     if not clean_title:
         return None
     text = clean_title.lower()
-    for std_title, kws in JOB_TITLE_MAP.items():
-        if any(k in text for k in kws):
-            return std_title
+
+    # 1. JOB_TITLE_MAP — đã compile sẵn, sort dài trước
+    for std_title, patterns in COMPILED_JOB_TITLE_MAP:
+        for pat in patterns:
+            if pat.search(text):
+                return std_title
+
+    # 2. ROLE_WORDS + TECH_DOMAIN inference — giữ nguyên
     role   = next((v for k, v in ROLE_WORDS.items()  if k in text), None)
     domain = next((v for k, v in TECH_DOMAIN.items() if k in text), None)
     if role:
@@ -331,12 +349,14 @@ def _detect_job_title(clean_title: str) -> str | None:
         )
         if inferred:
             return inferred
-    for kws, en_title in NON_IT_TITLE_MAP:
-        if any(k in text for k in kws):
-            return en_title
+
+    # 3. NON_IT_TITLE_MAP — đã compile sẵn
+    for en_title, patterns in COMPILED_NON_IT_TITLE_MAP:
+        for pat in patterns:
+            if pat.search(text):
+                return en_title
+
     return None
-
-
 def _has_it_signal(text: str) -> bool:
     return (
         any(k in text for k in TECH_DOMAIN)
@@ -434,43 +454,67 @@ def _build_canonical_key(raw_clean: str) -> str:
     s = re.sub(r'\s+', ' ', s).strip()
     return s
 
-
 def parse_company_title(raw: str) -> dict:
     s = (raw or "").strip()
-    if not s:
-        return {'company_title_clean': 'Unknown', 'company_type': 'Unknown',
-                'company_canonical_key': 'unknown'}
+    
+    if not s or s.lower() in ("null", "n/a", "none", "nan"):
+        return {
+            'company_title_clean':   'Unknown',
+            'company_type':          'Unknown',
+            'company_canonical_key': None,
+        }
+    
     sl = s.lower()
     if _CONFIDENTIAL_RE.search(sl):
-        return {'company_title_clean': 'Confidential', 'company_type': 'Confidential',
-                'company_canonical_key': 'confidential'}
+        return {
+            'company_title_clean':   'Confidential',
+            'company_type':          'Confidential',
+            'company_canonical_key': None,
+        }
+    
     company_type = None
     for pattern, ctype in COMPANY_TYPE_PATTERNS:
         if re.search(pattern, sl):
             company_type = ctype
             break
+    
     normalized = _normalize_company_name(s)
     canonical  = _build_canonical_key(normalized)
     clean_name = normalized or s
+    
     if not clean_name.strip():
-        return {'company_title_clean': 'Unknown', 'company_type': 'Unknown',
-                'company_canonical_key': 'unknown'}
-    return {'company_title_clean': clean_name, 'company_type': company_type or 'Khác',
-            'company_canonical_key': canonical or None}
-
+        return {
+            'company_title_clean':   'Unknown',
+            'company_type':          'Unknown',
+            'company_canonical_key': None,
+        }
+    
+    return {
+        'company_title_clean':   clean_name,
+        'company_type':          company_type or 'Khác',
+        'company_canonical_key': canonical or None,
+    }
 
 def _resolve_province(raw: str) -> tuple[str | None, str]:
-    loc      = raw.lower().strip()
+    loc = raw.lower().strip()
     province = PROVINCE_CANONICAL.get(loc)
     if province is None:
         for key in GEO_KEYS_SORTED:
             if key in loc:
                 province = PROVINCE_CANONICAL[key]
                 break
+    if province is None:
+        stripped = _SUFFIX_STRIP_RE.sub(" ", loc).strip()
+        if stripped and stripped != loc:
+            province = PROVINCE_CANONICAL.get(stripped)
+            if province is None:
+                for key in GEO_KEYS_SORTED:
+                    if key in stripped:
+                        province = PROVINCE_CANONICAL[key]
+                        break
+
     region = REGION_MAP.get(province, "Khác") if province else "Khác"
     return province, region
-
-
 def parse_location(raw: str) -> list[dict]:
     if not raw:
         return [{"location_province": "Khác", "location_region": "Khác", "is_vn": False}]
@@ -1041,18 +1085,18 @@ class RecruitmentETL:
         """
         with self.engine.connect() as conn:
             if mode == "all":
-                df = pd.read_sql(f"SELECT * FROM {SRC_TABLE}", conn)
+                df = pd.read_sql(f"SELECT * FROM {SRC_TABLE} where ai_processed = True", conn)
                 target_date = None
             elif mode == "date" and date_str:
                 df = pd.read_sql(
                     f"SELECT * FROM {SRC_TABLE} "
-                    f"WHERE scraped_at::date = '{date_str}'", conn
+                    f"WHERE scraped_at::date = '{date_str}' and ai_processed::date = True", conn
                 )
                 target_date = date_str
             else:  # today
                 df = pd.read_sql(
                     f"SELECT * FROM {SRC_TABLE} "
-                    f"WHERE scraped_at::date = CURRENT_DATE", conn
+                    f"WHERE scraped_at::date = CURRENT_DATE and ai_processed = True", conn
                 )
                 target_date = date.today()
         print(f"   Đọc {len(df):,} rows từ {SRC_TABLE}.")

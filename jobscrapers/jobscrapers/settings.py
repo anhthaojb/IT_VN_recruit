@@ -13,11 +13,6 @@ SCRAPEOPS_API_KEY                    = '53cd5666-1098-4bef-b063-461899aa5e2c'
 SCRAPEOPS_FAKE_USER_AGENT_ENDPOINT   = True
 SCRAPEOPS_NUM_RESULTS                = 50
 
-# =========================================================
-#  Crawl mode
-#  Mặc định: "daily" — chỉ lấy job mới trong 24h
-#  Ghi đè:   scrapy crawl <spider> -s CRAWL_MODE=full
-# =========================================================
 CRAWL_MODE = "daily"   # "full" | "daily"
 
 # =========================================================
@@ -82,16 +77,11 @@ TWISTED_REACTOR          = "twisted.internet.asyncioreactor.AsyncioSelectorReact
 PLAYWRIGHT_BROWSER_TYPE  = "chromium"
 PLAYWRIGHT_LAUNCH_OPTIONS = {"headless": True}
 
-# =========================================================
-#  Pipelines
-# =========================================================
+
 ITEM_PIPELINES = {
     "jobscrapers.pipelines.CleaningPipeline"   : 300,
     # "myproject.pipelines.EnrichPipeline":    200,
     "jobscrapers.pipelines.SaveToMySQLPipeline": 400,
 }
 
-# =========================================================
-#  Encoding
-# =========================================================
 FEED_EXPORT_ENCODING = "utf-8"

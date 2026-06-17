@@ -271,46 +271,36 @@ LEVEL_MAP: list[tuple[list[str], str]] = [
     (["intern", "thực tập", "internship", "trainee"],
      "Intern"),
 
-
     (["fresher", "fresh grad", "mới tốt nghiệp", "entry level", "entry-level"],
      "Fresher"),
 
-
-    (["junior", "jr"],
+    (["junior", "jr\\."],
      "Junior"),
-
 
     (["mid-level", "mid level", "middle", "intermediate"],
      "Middle"),
 
+    (["senior", "sr\\."],   # BỎ "experienced", "chuyên gia", "chuyên viên cao cấp"
+     "Senior"),             # vì những từ này hay xuất hiện trong mô tả, không phải level field
 
-    (["senior", "sr", "experienced", "chuyên gia", "chuyên viên cao cấp"],
-     "Senior"),
+    (["tech lead", "team lead", "trưởng nhóm", "lead developer", "lead engineer"],
+     "Lead"),               # BỎ "leader", "lead" đơn — quá chung, conflict với job title
 
+    # BỎ HOÀN TOÀN: "manager", "project manager", "pm", "quản lý", "trưởng phòng"
+    # → những từ này là job title, không phải level
 
-    (["leader", "lead", "tech lead", "team lead", "trưởng nhóm"],
-     "Lead"),
-
-
-    (["manager", "quản lý", "trưởng phòng", "project manager", r"\bpm\b"],
-     "Manager"),
-
-
-    (["head", "head of", "trưởng bộ phận"],
+    (["head of", "trưởng bộ phận"],   # BỎ "head" đơn
      "Head"),
 
     (["director", "giám đốc"],
      "Director"),
 
-
     ([r"\bvp\b", "vice president", "phó giám đốc"],
      "VP"),
-
 
     (["ceo", "cto", "cfo", "coo", "cmo", "c-level"],
      "C-Level"),
 ]
-
 EXP_TO_LEVEL: list[tuple[float, float, str]] = [
     (0.0,  0.5,          "Intern"),     # <= 6 tháng
     (0.5,  1.5,          "Fresher"),    # 6 tháng – 1.5 năm
@@ -490,7 +480,7 @@ IT_TITLES: frozenset[str] = frozenset(JOB_CATEGORY_MAP.keys())
 JOB_TITLE_MAP: dict[str, list[str]] = {
 
     "Project Manager": [
-        "project manager", "pm ", "pm)", "pmo",
+        "project manager", "pmo",
         "quản lý dự án", "điều phối dự án", "quản trị dự án"
     ],
     "Project Leader": [
@@ -512,7 +502,7 @@ JOB_TITLE_MAP: dict[str, list[str]] = {
         "solution consultant", "presales consultant"
     ],
     "Product Owner": [
-        "product owner", "po ", "po)", "quản lý sản phẩm",
+        "product owner", "quản lý sản phẩm",
         "giám đốc sản phẩm", "phát triển sản phẩm"
     ],
     "Product Manager": [
@@ -522,7 +512,7 @@ JOB_TITLE_MAP: dict[str, list[str]] = {
         "product executive", "chuyên viên sản phẩm"
     ],
     "Business Analyst": [
-        "business analyst", "ba ", "ba)",
+        "business analyst",
         "phân tích nghiệp vụ", "phân tích kinh doanh",
         "business data analyst"
     ],
@@ -559,14 +549,14 @@ JOB_TITLE_MAP: dict[str, list[str]] = {
     ],
     "DevOps/DevSecOps": [
         "devops", "sre", "devsecops",
-        "ci/cd", "site reliability", "mlops"
+        "ci/cd", "site reliability", "mlops", "scrum master"
     ],
     "Cloud Engineer": [
         "cloud engineer", "aws engineer", "azure engineer",
         "gcp engineer", "kỹ sư đám mây", "cloud architect"
     ],
     "System Engineer": [
-        "system engineer", "network engineer",
+        "system engineer","brse", "network engineer",
         "kỹ sư mạng", "an ninh mạng",
         "security engineer", "bảo mật",
         "hạ tầng", "infrastructure engineer",
@@ -582,14 +572,14 @@ JOB_TITLE_MAP: dict[str, list[str]] = {
     ],
     "Data Analyst": [
         "data analyst", "phân tích dữ liệu",
-        "chuyên viên phân tích dữ liệu", "anlatics", "da", "analytics"
+        "chuyên viên phân tích dữ liệu", "anlatics", "analytics"
     ],
     "Data Scientist": [
-        "data scientist", "khoa học dữ liệu", "ds", "data science"
+        "data scientist", "khoa học dữ liệu",  "data science"
     ],
     "BI Analyst": [
         "business intelligence", "bi analyst",
-        "bi executive", "bi developer", "bi"
+        "bi executive", "bi developer"
     ],
     "Database Engineer": [
         "dba", "database", "cơ sở dữ liệu",
@@ -936,13 +926,7 @@ SKILL_MAP: dict[str, dict[str, list[str]]] = {
         "Chịu áp lực":           ["chịu được áp lực", "work under pressure",
                                   "áp lực cao", "high pressure"],
         "Tự học":                ["tự học", "self-learning", "thích nghi",
-                                  "ham học hỏi", "continuous learning"],
-        "Tiếng Anh":             ["tiếng anh", "english", "toeic", "ielts",
-                                  "toefl", "fluent english"],
-        "Tiếng Nhật":            ["tiếng nhật", "japanese", "n1", "n2", "n3",
-                                  "jlpt"],
-        "Tiếng Trung":           ["tiếng trung", "chinese", "hsk", "mandarin"],
-        "Tiếng Hàn":             ["tiếng hàn", "korean", "topik"],
+                                  "ham học hỏi", "continuous learning"]
     },
 }
 
@@ -1153,6 +1137,14 @@ NON_IT_TITLE_MAP: list[tuple[list[str], str]] = [
                                                                   "Senior Executive"),
     (["chuyên viên", "specialist", "executive officer"],         "Specialist"),
     (["nhân viên", "staff", "officer"],                          "Staff"),
+    (["thu hồi nợ", "cv/cvc", "debt collection"],     "Debt Collection Executive"),
+(["quản đốc xưởng", "quản đốc"],                  "Production Supervisor"),
+(["quan hệ khách hàng cá nhân", "personal banking"], "Personal Banking Executive"),
+(["giao dịch viên"],                               "Banking Officer"),
+(["corporate communication"],                      "PR Executive"),
+(["organization development", "od executive"],     "HR Executive"),
+(["digital risk", "risk investigator"],            "Risk Analyst"),
+(["market research", "nghiên cứu thị trường"],     "Market Research Executive"),
 ]
 
 
@@ -1206,3 +1198,31 @@ ITVIEC_WORK_MODE_MAP: dict[str, str] = {
 
 ITVIEC_VALID_OUTPUTS:  frozenset[str] = frozenset(ITVIEC_WORK_MODE_MAP.values())
 ITVIEC_WORK_MODE_INPUTS: frozenset[str] = frozenset(ITVIEC_WORK_MODE_MAP.keys())
+# ==============================================================================
+# COMPILED TITLE MATCHERS — build once at import time
+# ==============================================================================
+import re as _re
+
+def _compile_title_map(title_map: dict) -> list[tuple[str, list[_re.Pattern]]]:
+    result = []
+    for std_title, kws in title_map.items():
+        patterns = []
+        for k in sorted(kws, key=len, reverse=True):
+            pat = _re.compile(
+                r"(?<![a-z0-9])" + _re.escape(k) + r"(?![a-z0-9])",
+                _re.IGNORECASE
+            )
+            patterns.append(pat)
+        result.append((std_title, patterns))
+    return result
+COMPILED_JOB_TITLE_MAP    = _compile_title_map(JOB_TITLE_MAP)
+COMPILED_NON_IT_TITLE_MAP = [
+    (en_title, [
+        _re.compile(
+            r"(?<![a-z0-9])" + _re.escape(k) + r"(?![a-z0-9])",
+            _re.IGNORECASE
+        )
+        for k in sorted(kws, key=len, reverse=True)
+    ])
+    for kws, en_title in NON_IT_TITLE_MAP
+]

@@ -140,9 +140,9 @@ def main():
           AND ai_processed = FALSE
           AND job_description IS NOT NULL
           AND job_description != ''
-            and job_requirement = ''
+        and job_requirement = ''
         ORDER BY scraped_at DESC
-                limit 80;
+        limit 30;
     """)
 
 

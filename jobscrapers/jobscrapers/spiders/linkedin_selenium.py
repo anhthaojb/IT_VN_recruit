@@ -8,16 +8,13 @@ import random
 import signal
 import argparse
 import pathlib
-import chromedriver_autoinstaller
-chromedriver_autoinstaller.install(no_ssl=True)
 from datetime import datetime
 from urllib.parse import quote_plus, urlparse, parse_qs, urlencode
 from dotenv import load_dotenv
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException
 import undetected_chromedriver as uc
 
 load_dotenv()
@@ -202,7 +199,8 @@ def init_driver():
     opts.add_argument("--start-maximized")
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--lang=vi-VN,vi;q=0.9,en-US;q=0.8")
-    driver = uc.Chrome(options=opts, driver_executable_path=chromedriver_autoinstaller.install())
+    
+    driver = uc.Chrome(options=opts)
     driver.set_page_load_timeout(60)
     driver.set_script_timeout(20)
     return driver
