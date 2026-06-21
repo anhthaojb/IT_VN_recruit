@@ -24,8 +24,12 @@ set DATABASE_URL=postgresql://postgres:123456@localhost:5432/recruitment_dw
 :: PostgreSQL CLI
 set PATH=%PATH%;C:\Program Files\PostgreSQL\18\bin
 :: API Keys
-for /f "tokens=1,* delims==" %%a in (.env) do (
-    if "%%a"=="GROQ_API_KEY" set GROQ_API_KEY=%%b
+if not exist "%ROOT_DIR%\..\env" (
+    call :log "WARN - Khong tim thay file env"
+) else (
+    for /f "usebackq tokens=1,* delims==" %%a in ("%ROOT_DIR%\..\env") do (
+        if "%%a"=="GROQ_API_KEY" set GROQ_API_KEY=%%b
+    )
 )
 :: Datef
 for /f "delims=" %%d in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd"') do (

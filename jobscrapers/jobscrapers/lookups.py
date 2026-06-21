@@ -1015,6 +1015,7 @@ NON_IT_TITLE_MAP: list[tuple[list[str], str]] = [
     (["content marketing manager"],                               "Content Marketing Manager"),
     (["content writer", "copywriter", "content creator",
       "content marketing"],                                       "Content Writer"),
+      (["ua marketing", "user acquisition", "thu hút người dùng"],  "UA Marketing"),
     (["truyền thông", "communications", "public relations",
       "pr executive", "pr manager"],                              "PR Executive"),
     (["brand manager", "quản lý thương hiệu"],                   "Brand Manager"),

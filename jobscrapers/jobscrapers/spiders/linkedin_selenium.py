@@ -38,33 +38,11 @@ MIN_ABOUT_JOB_CHARS  = 200
 DAILY_MAX_AGE_DAYS   = 3
 
 KEYWORDS_BY_CATEGORY = {
-    "software_dev": [
-        "software engineer",
-        "backend developer",
-        "frontend developer",
-        "full stack developer",
-    ],
-    "data": [
-        "data analyst",
-        "data scientist",
-        "data engineer",
-        "business intelligence",
-    ],
-    "devops_cloud": [
-        "devops engineer",
-        "cloud engineer",
-        "site reliability engineer",
-    ],
-    "security": [
-        "cybersecurity",
-        "security engineer",
-        "penetration tester",
-    ],
-    "ai_ml": [
-        "machine learning engineer",
-        "AI engineer",
-        "NLP engineer",
-    ],
+    "software_dev": ["backend developer", "frontend developer", "full stack developer"],
+    "data":         ["data analyst", "data engineer","data scientist", "business intelligence"],
+    "devops_cloud": ["devops engineer", "cloud engineer"],
+    "security":     ["cybersecurity", "security engineer"],
+    "ai_ml":        ["machine learning engineer", "AI engineer"],
 }
 
 COOKIE_FILE = pathlib.Path("data") / "linkedin_cookies.json"
@@ -200,7 +178,7 @@ def init_driver():
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--lang=vi-VN,vi;q=0.9,en-US;q=0.8")
     
-    driver = uc.Chrome(options=opts)
+    driver = uc.Chrome(options=opts,version_main=149)
     driver.set_page_load_timeout(60)
     driver.set_script_timeout(20)
     return driver
@@ -513,13 +491,14 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
     if not matched:
         print("  ⚠️  Job list không load — bỏ qua")
         return 0, 0
-
     count_new = count_updated = 0
     page = 1
     stop_keyword = False
+    consecutive_old = 0         
+    MAX_CONSECUTIVE_OLD = 3      
 
-    while count_new < MAX_JOBS_PER_KEYWORD and not stop_keyword:
-        print(f"  📄 Trang {page} | ✅ mới={count_new} 🔄 updated={count_updated}")
+    while not stop_keyword:      
+        print(f"  📄 Trang {page} |  mới={count_new}  updated={count_updated}  old_streak={consecutive_old}")
 
         _, cards_now = _get_cards(driver)
         if not cards_now:
@@ -528,7 +507,7 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
         card_index  = 0
 
         while card_index < total_cards:
-            if count_new >= MAX_JOBS_PER_KEYWORD or stop_keyword:
+            if stop_keyword:
                 break
 
             clicked = _click_card_by_index(driver, card_index)
@@ -544,6 +523,7 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
             if not matched_detail:
                 print(f"    ⚠️  Detail không load (card {card_index}) — skip")
                 card_index += 1
+                time.sleep(random.uniform(2, 5))
                 continue
 
             normalized_url = _normalize_li_url(driver.current_url)
@@ -556,15 +536,20 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
             if not raw:
                 card_index += 1
                 continue
-
             if mode == "daily" and _is_old_linkedin(raw.get("job_posted_at", "")):
-                print(f"  ⏹ Job cũ ({raw['job_posted_at']!r}) — dừng keyword")
-                stop_keyword = True
-                break
+                consecutive_old += 1
+                print(f"    🕰️  Job cũ ({raw['job_posted_at']!r}) — streak={consecutive_old}/{MAX_CONSECUTIVE_OLD}")
+                if consecutive_old >= MAX_CONSECUTIVE_OLD:
+                    print(f"  ⏹ {MAX_CONSECUTIVE_OLD} job cũ liên tiếp — dừng keyword")
+                    stop_keyword = True
+                card_index += 1
+                continue
+            else:
+                consecutive_old = 0  
 
             seen_urls.add(normalized_url)
             raw["job_url"]         = normalized_url
-            raw["job_requirement"] = None   
+            raw["job_requirement"] = None
 
             cur, conn = ensure_db_connection(cur, conn)
             cleaned = clean_dict(raw)
@@ -583,7 +568,7 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
 
             card_index += 1
 
-        if stop_keyword or count_new >= MAX_JOBS_PER_KEYWORD:
+        if stop_keyword:
             break
 
         _, cards_before = _get_cards(driver)
@@ -603,7 +588,6 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
         page += 1
 
     return count_new, count_updated
-
 
 # =========================================================
 #  Main
@@ -649,13 +633,29 @@ def main():
         for category, keywords in KEYWORDS_BY_CATEGORY.items():
             summary[category] = {}
             for keyword in keywords:
-                new, updated = scrape_keyword(
-                    driver, keyword, category, seen_urls, cur, conn, args.mode, tracker
-                )
+                try:
+                    new, updated = scrape_keyword(
+                        driver, keyword, category, seen_urls, cur, conn, args.mode, tracker
+                    )
+                except Exception as e:
+                    if "invalid session" in str(e).lower() or "session deleted" in str(e).lower():
+                        print(f"  ⚠️  Chrome crash — restart driver...")
+                        try:
+                            driver.service.process.kill()
+                            driver.quit()
+                        except Exception:
+                            pass
+                        driver = init_driver()
+                        login(driver)
+                        new, updated = 0, 0
+                    else:
+                        print(f"  ❌ keyword {keyword!r} lỗi: {e}")
+                        new, updated = 0, 0
+                
                 summary[category][keyword] = (new, updated)
                 total_new     += new
                 total_updated += updated
-                delay = random.uniform(5, 10)
+                delay = random.uniform(10, 30)
                 print(f"  💤 Nghỉ {delay:.1f}s...")
                 time.sleep(delay)
 

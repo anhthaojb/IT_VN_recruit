@@ -506,7 +506,7 @@ def init_driver():
         "prefs",
         {"profile.managed_default_content_settings.images": 2}
     )
-    return uc.Chrome(options=opts)
+    return uc.Chrome(options=opts,version_main=149)
 
 
 

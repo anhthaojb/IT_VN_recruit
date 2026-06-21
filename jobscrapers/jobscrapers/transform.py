@@ -259,8 +259,6 @@ def parse_dates(posted_raw: str, deadline_raw: str, scraped_at: str,
                 deadline = _to_date(m.group(1), ref)
                 if deadline:
                     break
-
-    # Fallback posted_at về scraped_at — không dùng deadline
     if posted is None and ref:
         try:
             posted = datetime.fromisoformat(ref.replace(" ", "T")).date()
@@ -1111,7 +1109,9 @@ class RecruitmentETL:
         for _, r in df.iterrows():
             src_id  = r.get("id")
             job_url = _s(r.get("job_url"))
-
+            if not _s(r.get("job_title")).strip():
+                ec.add(run_id, src_id, job_url, "job_title", None, "SKIP", "Không có job_title")
+                continue
             row: dict = {
                 "src_id":           src_id,
                 "job_url":          job_url,

@@ -36,7 +36,14 @@ CONCURRENT_REQUESTS          = 1
 CONCURRENT_REQUESTS_PER_DOMAIN = 1
 DOWNLOAD_DELAY               = 4        # tăng từ 2 → 4
 RANDOMIZE_DOWNLOAD_DELAY     = True     # thực tế 4~8s
-
+# =========================================================
+#  AutoThrottle
+# =========================================================
+AUTOTHROTTLE_ENABLED            = True
+AUTOTHROTTLE_START_DELAY        = 4
+AUTOTHROTTLE_MAX_DELAY          = 60
+AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
+AUTOTHROTTLE_DEBUG              = Falsem
 # =========================================================
 #  Retry — xử lý 403 từ TopCV
 # =========================================================
@@ -62,10 +69,12 @@ DEFAULT_REQUEST_HEADERS = {
 # =========================================================
 DOWNLOADER_MIDDLEWARES = {
     "scrapy.downloadermiddlewares.useragent.UserAgentMiddleware": None,
+    "scrapy.downloadermiddlewares.retry.RetryMiddleware"        : None,  # tắt mặc định
+    "jobscrapers.middlewares.BackoffRetryMiddleware"            : 550,   # thêm dòng này
     "jobscrapers.middlewares.RotateUserAgentMiddleware"         : 400,
     "jobscrapers.middlewares.JobscrapersDownloaderMiddleware"   : 543,
 }
-
+COOKIES_ENABLED = True
 # =========================================================
 #  Playwright
 # =========================================================
