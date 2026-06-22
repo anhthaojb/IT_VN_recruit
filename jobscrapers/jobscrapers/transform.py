@@ -25,15 +25,8 @@ _project_root = str(pathlib.Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-TYPESENSE_ENABLED: bool = os.environ.get("TYPESENSE_ENABLED", "true").lower() == "true"
-
-if TYPESENSE_ENABLED:
-    try:
-        import typesense
-    except ImportError:
-        TYPESENSE_ENABLED = False
-        print("⚠️  typesense không được cài — TYPESENSE_ENABLED tự động tắt")
-
+TYPESENSE_ENABLED: bool = False
+# Typesense disabled
 from rapidfuzz import fuzz as _fuzz
 from tqdm import tqdm
 from datetime import datetime, timedelta, date
@@ -488,7 +481,7 @@ def parse_company_title(raw: str) -> dict:
         }
     
     return {
-        'company_title_clean':   clean_name,
+        'company_title_clean':   clean_name.upper(),
         'company_type':          company_type or 'Khác',
         'company_canonical_key': canonical or None,
     }
@@ -1088,7 +1081,7 @@ class RecruitmentETL:
             elif mode == "date" and date_str:
                 df = pd.read_sql(
                     f"SELECT * FROM {SRC_TABLE} "
-                    f"WHERE scraped_at::date = '{date_str}' and ai_processed::date = True", conn
+                    f"WHERE scraped_at::date = '{date_str}' and ai_processed = True", conn
                 )
                 target_date = date_str
             else:  # today

@@ -17,7 +17,9 @@ if _project_root not in sys.path:
 from jobscrapers.pipelines import get_db_connection, _clean_nbsp
 logger = logging.getLogger(__name__)
 
-MODEL = "llama-3.3-70b-versatile"
+# MODEL = "llama-3.3-70b-versatile"
+# MODEL="openai/gpt-oss-120b"   # mạnh hơn, chậm hơn
+MODEL="qwen/qwen3.6-27b" 
 MAX_RETRIES     = 3
 RETRY_DELAY     = 2
 MAX_RAW_CHARS   = 6000
@@ -51,9 +53,6 @@ CRITICAL: Do not write any markdown fences (like ```json), no explanations, no c
 10. job_type: Never use 'Internship' as job_type — use level field for intern detection instead.
 """.strip()
 
-# client    = Groq(api_key=os.getenv("GROQ_API_KEY"))
-# _req_count  = 0
-# _req_window = time.time()
 _client     = None
 _req_count  = 0
 _req_window = 0.0
@@ -132,17 +131,23 @@ def main():
     conn, cur = get_db_connection()
 
     cur.execute("""
-        SELECT id, job_title, company_title, job_url,
-               job_description, work_mode, job_type,
-               compensation, level
-        FROM staging_jobs
-        WHERE website = 'linkedin'
-          AND ai_processed = FALSE
-          AND job_description IS NOT NULL
-          AND job_description != ''
-        and job_requirement = ''
-        ORDER BY scraped_at DESC
-        limit 30;
+            SELECT id, job_title, company_title, job_url,
+           job_description, work_mode, job_type,
+           compensation, level
+    FROM staging_jobs
+    WHERE website = 'linkedin'
+      AND ai_processed = FALSE
+      AND job_description IS NOT NULL
+      AND job_description != ''
+      AND (
+          job_requirement IS NULL OR job_requirement = ''
+          OR level IS NULL OR level = ''
+          OR education_level IS NULL OR education_level = ''
+          OR compensation IS NULL OR compensation = ''
+          OR experience IS NULL OR experience = ''
+      )
+    ORDER BY scraped_at DESC
+    LIMIT 40;
     """)
 
 

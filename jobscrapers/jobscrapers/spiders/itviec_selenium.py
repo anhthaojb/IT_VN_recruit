@@ -28,6 +28,7 @@ from jobscrapers.pipelines import RunTracker, clean_dict, save_to_db, get_db_con
 # =========================================================
 
 MAX_JOBS_PER_KEYWORD = 5
+MAX_PAGES_PER_KEYWORD = 3
 
 KEYWORDS_BY_CATEGORY = {
     "software_dev": [
@@ -74,7 +75,6 @@ KEYWORDS_BY_CATEGORY = {
         "LLM Engineer",
     ],
 }
-COOKIE_FILE = Path("data") / "itviec_cookies.json"
 
 # =========================================================
 #  SELECTORS
@@ -413,7 +413,7 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
     current_list_url = driver.current_url
     stop_keyword     = False
 
-    while job_count < MAX_JOBS_PER_KEYWORD and not stop_keyword:
+    while job_count < MAX_JOBS_PER_KEYWORD and not stop_keyword and page <= MAX_PAGES_PER_KEYWORD:
         print(f"  📄 Trang {page} | {job_count}/{MAX_JOBS_PER_KEYWORD}")
 
         _, cards = wait_any_css(driver, SEL_JOB_CARDS, timeout=12)
@@ -544,32 +544,56 @@ def load_cookies(driver):
 
 
 def login(driver):
-    if COOKIE_FILE.exists():
-        print("Tìm thấy cookie — đang thử load...")
-        load_cookies(driver)
-        driver.get("https://itviec.com/it-jobs")
-        time.sleep(2)
-        if _is_logged_in(driver):
-            print(f"✓ Đã login từ cookie")
-            return
-        print("Cookie hết hạn — yêu cầu login lại")
-        COOKIE_FILE.unlink(missing_ok=True)
+    email = os.getenv("ITVIEC_EMAIL")
+    password = os.getenv("ITVIEC_PASSWORD")
+    if not email or not password:
+        raise Exception(
+            "Thiếu ITVIEC_EMAIL / ITVIEC_PASSWORD trong .env — không thể auto-login."
+        )
 
     driver.get("https://itviec.com/sign_in")
-    print("\n" + "="*55)
-    print("  Vui lòng ĐĂNG NHẬP THỦ CÔNG trên Chrome vừa mở.")
-    print("  Sau khi login xong, quay lại đây nhấn Enter.")
-    print("="*55)
-    input("  >>> Nhấn Enter khi đã login xong: ")
+
+    email_el = find_first(driver, [
+        (By.CSS_SELECTOR, "input[name='user[email]']"),
+        (By.CSS_SELECTOR, "input[type='email']"),
+        (By.ID, "user_email"),
+    ], timeout=10)
+    password_el = find_first(driver, [
+        (By.CSS_SELECTOR, "input[name='user[password]']"),
+        (By.CSS_SELECTOR, "input[type='password']"),
+        (By.ID, "user_password"),
+    ], timeout=10)
+
+    if not email_el or not password_el:
+        raise Exception("Không tìm thấy form login (ITviec có thể đã đổi giao diện).")
+
+    email_el.clear()
+    email_el.send_keys(email)
+    password_el.clear()
+    password_el.send_keys(password)
+
+    submit_el = find_first(driver, [
+        (By.XPATH, "//button[contains(., 'Sign In with Email')]"),
+        (By.CSS_SELECTOR, "button[type='submit']"),
+        (By.CSS_SELECTOR, "input[type='submit']"),
+    ], timeout=5)
+
+    if submit_el:
+        driver.execute_script("arguments[0].click();", submit_el)
+    else:
+        password_el.submit()
+
+    time.sleep(3)
 
     driver.get("https://itviec.com/it-jobs")
     time.sleep(2)
     if not _is_logged_in(driver):
-        raise Exception("Chưa detect được trạng thái login.")
+        raise Exception(
+            "Auto-login thất bại — kiểm tra lại email/password trong .env, "
+            "hoặc ITviec đang yêu cầu captcha/verify thủ công."
+        )
 
-    save_cookies(driver)
-    print(f"✓ Đăng nhập thành công")
-
+    print("✓ Đăng nhập tự động thành công")
 # =========================================================
 #  MAIN
 # =========================================================

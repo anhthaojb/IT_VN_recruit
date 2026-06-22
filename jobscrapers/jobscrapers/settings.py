@@ -43,7 +43,7 @@ AUTOTHROTTLE_ENABLED            = True
 AUTOTHROTTLE_START_DELAY        = 4
 AUTOTHROTTLE_MAX_DELAY          = 60
 AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
-AUTOTHROTTLE_DEBUG              = Falsem
+AUTOTHROTTLE_DEBUG              = False
 # =========================================================
 #  Retry — xử lý 403 từ TopCV
 # =========================================================

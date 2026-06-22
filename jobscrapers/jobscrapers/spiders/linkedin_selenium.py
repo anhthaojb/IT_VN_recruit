@@ -36,7 +36,7 @@ MAX_JOBS_PER_KEYWORD = 5
 JOB_DETAIL_WAIT      = 12
 MIN_ABOUT_JOB_CHARS  = 200
 DAILY_MAX_AGE_DAYS   = 3
-
+MAX_PAGES = 10
 KEYWORDS_BY_CATEGORY = {
     "software_dev": ["backend developer", "frontend developer", "full stack developer"],
     "data":         ["data analyst", "data engineer","data scientist", "business intelligence"],
@@ -494,11 +494,12 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
     count_new = count_updated = 0
     page = 1
     stop_keyword = False
-    consecutive_old = 0         
-    MAX_CONSECUTIVE_OLD = 3      
 
-    while not stop_keyword:      
-        print(f"  📄 Trang {page} |  mới={count_new}  updated={count_updated}  old_streak={consecutive_old}")
+    while not stop_keyword:   
+        if page > MAX_PAGES:
+            print(f"  Đã đủ {MAX_PAGES} trang — dừng keyword")
+            break
+        print(f"  Trang {page} |  mới={count_new}  updated={count_updated}")
 
         _, cards_now = _get_cards(driver)
         if not cards_now:
@@ -537,16 +538,9 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
                 card_index += 1
                 continue
             if mode == "daily" and _is_old_linkedin(raw.get("job_posted_at", "")):
-                consecutive_old += 1
-                print(f"    🕰️  Job cũ ({raw['job_posted_at']!r}) — streak={consecutive_old}/{MAX_CONSECUTIVE_OLD}")
-                if consecutive_old >= MAX_CONSECUTIVE_OLD:
-                    print(f"  ⏹ {MAX_CONSECUTIVE_OLD} job cũ liên tiếp — dừng keyword")
-                    stop_keyword = True
+                print(f"    🕰️  Job cũ ({raw['job_posted_at']!r}) — skip")
                 card_index += 1
                 continue
-            else:
-                consecutive_old = 0  
-
             seen_urls.add(normalized_url)
             raw["job_url"]         = normalized_url
             raw["job_requirement"] = None

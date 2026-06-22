@@ -266,49 +266,23 @@ EXP_BINS: list[tuple[float, float, str]] = [
 
 
 
-LEVEL_MAP: list[tuple[list[str], str]] = [
-
-    (["intern", "thực tập", "internship", "trainee"],
-     "Intern"),
-
-    (["fresher", "fresh grad", "mới tốt nghiệp", "entry level", "entry-level"],
-     "Fresher"),
-
-    (["junior", "jr\\."],
-     "Junior"),
-
-    (["mid-level", "mid level", "middle", "intermediate"],
-     "Middle"),
-
-    (["senior", "sr\\."],   # BỎ "experienced", "chuyên gia", "chuyên viên cao cấp"
-     "Senior"),             # vì những từ này hay xuất hiện trong mô tả, không phải level field
-
-    (["tech lead", "team lead", "trưởng nhóm", "lead developer", "lead engineer"],
-     "Lead"),               # BỎ "leader", "lead" đơn — quá chung, conflict với job title
-
-    # BỎ HOÀN TOÀN: "manager", "project manager", "pm", "quản lý", "trưởng phòng"
-    # → những từ này là job title, không phải level
-
-    (["head of", "trưởng bộ phận"],   # BỎ "head" đơn
-     "Head"),
-
-    (["director", "giám đốc"],
-     "Director"),
-
-    ([r"\bvp\b", "vice president", "phó giám đốc"],
-     "VP"),
-
-    (["ceo", "cto", "cfo", "coo", "cmo", "c-level"],
-     "C-Level"),
+LEVEL_MAP = [
+    (['intern', 'thực tập', 'internship', 'trainee'], 'Intern'),
+    (['fresher', 'fresh grad', 'mới tốt nghiệp', 'entry level', 'entry-level'], 'Fresher'),
+    (['junior', 'jr\\.'], 'Junior'),
+    (['mid-level', 'mid level', 'middle', 'intermediate'], 'Middle'),
+    (['senior', 'sr\\.'], 'Senior'),
+    (['tech lead', 'team lead', 'trưởng nhóm', 'lead developer', 'lead engineer'], 'Lead'),
+    (['manager', 'project manager', 'quản lý', 'trưởng phòng', 'head of', 'trưởng bộ phận', 'director', 'giám đốc', '\\bvp\\b', 'vice president', 'phó giám đốc', 'ceo', 'cto', 'cfo', 'coo', 'cmo', 'c-level'], 'Manager+'),
 ]
 EXP_TO_LEVEL: list[tuple[float, float, str]] = [
     (0.0,  0.5,          "Intern"),     # <= 6 tháng
     (0.5,  1.5,          "Fresher"),    # 6 tháng – 1.5 năm
     (1.5,  3.0,          "Junior"),
-    (3.0,  5.0,          "Mid-level"),
+    (3.0,  5.0,          "Middle"),
     (5.0,  8.0,          "Senior"),
     (8.0,  12.0,         "Lead"),
-    (12.0, float("inf"), "Manager"),
+    (12.0, float("inf"), "Manager+"),
 ]
 
 EDUCATION_MAP: dict[str, list[str]] = {
