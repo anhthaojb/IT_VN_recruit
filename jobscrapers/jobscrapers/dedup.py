@@ -7,9 +7,6 @@ import sqlalchemy
 import pandas as pd
 from rapidfuzz import fuzz as _rfuzz
 
-# ==============================================================================
-# CẤU HÌNH KẾT NỐI
-# ==============================================================================
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql+psycopg2://postgres:123456@localhost:5432/recruitment_dw"
@@ -41,10 +38,6 @@ def _title_dedup_key(title_detect, title_clean, level_clean):
     key  = f"{key}::{lv}"   if lv   else key
     return key
 
-# ==============================================================================
-# LOAD DỮ LIỆU
-# ==============================================================================
-
 def _get_run_id_col(engine) -> str:
     candidates = [
         "etl_run_id", "run_id", "batch_id", "etl_batch",
@@ -59,7 +52,7 @@ def _get_run_id_col(engine) -> str:
         cols = {row[0] for row in result}
     for c in candidates:
         if c in cols:
-            print(f"   ℹ️  Dùng cột '{c}' làm batch key cho daily mode.")
+            print(f" Dùng cột '{c}' làm batch key cho daily mode.")
             return c
     raise RuntimeError(
         f"Không tìm thấy cột batch trong {FACT_TABLE}. "
@@ -72,13 +65,12 @@ def _load_corpus(engine, run_id_col: str | None = None,
                  days_lookback: int | None = None):
     extra_col = f", {run_id_col}" if run_id_col else ""
 
-    # Chỉ lọc ngày khi daily mode
     if days_lookback is not None:
         time_filter = (
             f"AND job_posted_at_clean >= NOW() - INTERVAL '{days_lookback} days'"
         )
     else:
-        time_filter = ""  # full mode → load toàn bộ
+        time_filter = ""  
 
     with engine.connect() as conn:
         df = pd.read_sql(f"""
@@ -109,7 +101,6 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     df["_co"]   = df["company_canonical_key"].fillna("").str.lower().str.strip()
     df["_prov"] = df["location_province"].fillna("Khác")
 
-    # Job không có company thực sự → không tham gia dedup
     df["_skip_dedup"] = df["company_canonical_key"].isna()
 
     df["_src_rank"] = df["website_clean"].map(
@@ -127,10 +118,6 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     )
     return df
 
-
-# ==============================================================================
-# THUẬT TOÁN DEDUP
-# ==============================================================================
 
 def _find_duplicates(df_new: pd.DataFrame,
                      df_history: pd.DataFrame,
@@ -151,7 +138,6 @@ def _find_duplicates(df_new: pd.DataFrame,
         + hist_det["_tdk"]
     )
 
-    # Lưu cả posted_at để so sánh sau
     hist_canon: dict[str, tuple[int, pd.Timestamp]] = {}
     for key, grp in hist_det.groupby("_key", sort=False):
         grp_sorted = grp.sort_values(
@@ -176,7 +162,6 @@ def _find_duplicates(df_new: pd.DataFrame,
         if canon_id == int(row["etl_id"]):
             continue
 
-        # Kiểm tra khoảng cách ngày
         delta = abs(row["job_posted_at_clean"] - canon_posted)
         if delta > max_delta:
             continue
@@ -227,8 +212,6 @@ def _find_duplicates(df_new: pd.DataFrame,
                 if (row_id not in df_new_valid["etl_id"].values
                         or row_id in already_flagged):
                     continue
-
-                # Kiểm tra khoảng cách ngày
                 delta = abs(posteds[j] - posteds[i])
                 if delta > max_delta:
                     continue
@@ -255,9 +238,9 @@ def _find_duplicates(df_new: pd.DataFrame,
 
     return dup_records
 
-# ==============================================================================
+
 # DAILY DEDUP
-# ==============================================================================
+
 
 def run_daily_deduplication(engine, run_id: str,
                              run_id_col: str | None = None,
@@ -265,21 +248,21 @@ def run_daily_deduplication(engine, run_id: str,
     if run_id_col is None:
         run_id_col = _get_run_id_col(engine)
 
-    print(f"\n📥 [DAILY] Tải kho {days_lookback} ngày + batch {run_id_col}={run_id}...")
+    print(f"\n [DAILY] Tải kho {days_lookback} ngày + batch {run_id_col}={run_id}...")
     df_all = _load_corpus(engine, run_id_col=run_id_col,
-                          days_lookback=days_lookback)  # lọc 30 ngày ở DB
+                          days_lookback=days_lookback) 
 
     if df_all.empty:
-        print("🛑 Không có dữ liệu trong kho.")
+        print("Không có dữ liệu trong kho.")
         return 0
 
     df_new = df_all[df_all[run_id_col].astype(str) == str(run_id)].copy()
     if df_new.empty:
-        print(f"⚠️  Không có job nào với {run_id_col}={run_id}.")
+        print(f"Không có job nào với {run_id_col}={run_id}.")
         print(f"   Giá trị mẫu: {df_all[run_id_col].dropna().unique()[:5].tolist()}")
         return 0
 
-    print(f"📊 Corpus ({days_lookback}d): {len(df_all):,} | Mới: {len(df_new):,}")
+    print(f"Corpus ({days_lookback}d): {len(df_all):,} | Mới: {len(df_new):,}")
 
     df_all = _enrich(df_all)
     df_new = df_all[df_all[run_id_col].astype(str) == str(run_id)].copy()
@@ -289,11 +272,11 @@ def run_daily_deduplication(engine, run_id: str,
 
     n_exact = sum(1 for r in dup_records if r["method"] == "exact")
     n_fuzzy = sum(1 for r in dup_records if r["method"] == "fuzzy_title")
-    print(f"⚡ Phát hiện {len(dup_records):,} bản trùng "
+    print(f"Phát hiện {len(dup_records):,} bản trùng "
           f"({n_exact} exact | {n_fuzzy} fuzzy).")
 
     if dup_records:
-        print("💾 Ghi cờ trùng lặp...")
+        print("Ghi cờ trùng lặp...")
         with engine.begin() as conn:
             for i in range(0, len(dup_records), 20):
                 batch = dup_records[i:i + 20]
@@ -307,16 +290,14 @@ def run_daily_deduplication(engine, run_id: str,
 
     return len(dup_records)
 
-# ==============================================================================
+
 # FULL DEDUP
-# ==============================================================================
 
 def run_full_deduplication(engine, days_lookback: int = 90):
     print(f"\n[FULL] Tải toàn bộ kho (so sánh trong vòng {days_lookback} ngày)...")
     run_id_col = _get_run_id_col(engine)
     df_all = _load_corpus(engine, run_id_col=run_id_col,
-                          days_lookback=None)  # load toàn bộ, không lọc ngày
-
+                          days_lookback=None)  
     if df_all.empty:
         print("   Không có dữ liệu.")
         return 0
@@ -324,8 +305,7 @@ def run_full_deduplication(engine, days_lookback: int = 90):
     print(f"   Đã tải {len(df_all):,} dòng. Chuẩn hóa...")
     df_all      = _enrich(df_all)
     dup_records = _find_duplicates(df_new=df_all, df_history=df_all,
-                                   days_lookback=days_lookback)  # so sánh <= 90 ngày
-
+                                   days_lookback=days_lookback)  
     n_exact = sum(1 for r in dup_records if r["method"] == "exact")
     n_fuzzy = sum(1 for r in dup_records if r["method"] == "fuzzy_title")
     print(f"   Phát hiện {len(dup_records):,} bản trùng "
@@ -354,10 +334,8 @@ def run_full_deduplication(engine, days_lookback: int = 90):
                 """), batch)
 
     return len(dup_records)
-# ==============================================================================
-# LOAD DATA WAREHOUSE
-# ==============================================================================
 
+# LOAD DATA WAREHOUSE
 def run_load_dw(engine, run_id: str | None = None):
     p_mode = "today" if run_id else "all"
     scope  = f"run_id={run_id}" if run_id else "all"
@@ -365,14 +343,10 @@ def run_load_dw(engine, run_id: str | None = None):
     with engine.begin() as conn:
         result = conn.execute(
             sqlalchemy.text("SELECT sp_etl_load_dw(:p_mode, :p_run_id)"),
-            {"p_mode": p_mode, "p_run_id": run_id},          # ✅ đổi key
+            {"p_mode": p_mode, "p_run_id": run_id},         
         )
         print(f"   [SP]: {result.scalar()}")
-    print("   ✅ DW đồng bộ xong.")
-
-# ==============================================================================
-# CLI
-# ==============================================================================
+    print("   DW đồng bộ xong.")
 
 def main():
     parser = argparse.ArgumentParser(description="Dedup + Load DW")
@@ -411,7 +385,7 @@ def main():
         full_lookback = args.days_lookback if args.days_lookback is not None else 90
         total_dups = run_full_deduplication(engine, days_lookback=full_lookback)
     if args.skip_dw:
-        print("\n⏭️  Bỏ qua Load DW (--skip-dw).")
+        print("\n Bỏ qua Load DW (--skip-dw).")
     else:
         run_load_dw(engine, run_id=args.run_id if args.mode == "daily" else None)
 
@@ -419,7 +393,6 @@ def main():
     print(f"\n{'=' * 62}")
     print(f"  DONE — {total_dups:,} dups | {elapsed:.2f}s")
     print(f"{'=' * 62}\n")
-
 
 if __name__ == "__main__":
     main()

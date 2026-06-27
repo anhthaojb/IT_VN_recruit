@@ -15,7 +15,7 @@ class JobokoSpider(scrapy.Spider):
         "CONCURRENT_REQUESTS": 1,
         "CONCURRENT_REQUESTS_PER_DOMAIN": 1,
     }
-    MAX_PAGES_DAILY = 2  # safety: nếu detail check fail thì không cào cả site
+    MAX_PAGES_DAILY = 2 
 
     def _get_mode(self):
         return self.crawler.settings.get("CRAWL_MODE", "daily")
@@ -53,10 +53,8 @@ class JobokoSpider(scrapy.Spider):
             if not href:
                 continue
 
-            # ── Selectors đúng theo HTML thực tế ──────────────────────
             compensation_raw = job.css("div.item-rate span::text").get("").strip()
             location_raw     = job.css("div.item-address span::text").get("").strip()
-            # Deadline trên card (không phải posted_at)
             deadline_raw     = job.css("span.item-date::text").get("").strip()
 
             job_url = (
@@ -93,19 +91,18 @@ class JobokoSpider(scrapy.Spider):
         def xpath_all(query):
             return " ".join(response.xpath(query).getall()).strip()
 
-        # posted_at lấy từ detail page — đây là nơi duy nhất có ngày đăng
+
         posted_at = response.xpath(
             "//div[contains(@class,'nw-job-detail__heading') and contains(.,'Ngày làm mới')]"
             "/following-sibling::div[contains(@class,'nw-job-detail__text')][1]/text()"
         ).get("").strip()
 
-        # Daily mode: check và dừng tại đây
         if self._get_mode() == "daily":
             is_old = self._is_old(posted_at)
             if is_old is True:
                 self.logger.info(f"[joboko][daily] Job cũ ({posted_at!r}) — bỏ qua")
-                return  # bỏ job này nhưng không dừng spider
-                        # (joboko không sort hoàn toàn theo ngày)
+                return  
+                        
             elif is_old is None:
                 self.logger.warning(f"[joboko] Không parse được posted_at: {posted_at!r}")
 

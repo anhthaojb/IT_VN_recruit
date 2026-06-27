@@ -1,4 +1,3 @@
-# etl/staging_linkedin.py
 import os
 import pathlib
 import sys
@@ -6,7 +5,6 @@ import re
 import json
 import time
 import logging
-import psycopg2
 from groq import Groq
 from pathlib import Path
 from dotenv import load_dotenv
@@ -18,7 +16,7 @@ from jobscrapers.pipelines import get_db_connection, _clean_nbsp
 logger = logging.getLogger(__name__)
 
 # MODEL = "llama-3.3-70b-versatile"
-# MODEL="openai/gpt-oss-120b"   # mạnh hơn, chậm hơn
+# MODEL="openai/gpt-oss-120b"   
 MODEL="qwen/qwen3.6-27b" 
 MAX_RETRIES     = 3
 RETRY_DELAY     = 2
@@ -75,7 +73,7 @@ def _rate_limit_wait():
         return
     if _req_count >= MAX_REQ_PER_MIN:
         wait = 61 - elapsed
-        print(f"    ⏳ Rate limit Groq — chờ {wait:.1f}s...")
+        print(f"    Rate limit Groq — chờ {wait:.1f}s...")
         time.sleep(wait)
         _req_count  = 0
         _req_window = time.time()
@@ -117,7 +115,7 @@ def _call_groq(raw_text: str) -> dict:
         except Exception as e:
             err = str(e)
             if "429" in err or "rate_limit" in err.lower():
-                print(f"    ⏳ Groq 429 — chờ 62s...")
+                print(f"    Groq 429 — chờ 62s...")
                 time.sleep(62)
                 _req_count  = 0
                 _req_window = time.time()
@@ -155,7 +153,7 @@ def main():
     cols = [d[0] for d in cur.description]
     items = [dict(zip(cols, row)) for row in rows]
 
-    print(f"🤖 Cần xử lý AI: {len(items)} jobs")
+    print(f"Cần xử lý AI: {len(items)} jobs")
 
     for i, item in enumerate(items, 1):
         print(f"  [{i}/{len(items)}] {item['job_title']}")
@@ -176,7 +174,6 @@ def main():
                 job_req = "Thông tin chi tiết xem tại mô tả công việc hoặc liên hệ nhà tuyển dụng."
             if not job_desc:
                 job_desc = (item.get("job_description") or "").strip()
-            # Chuẩn hóa lương mặc định
             compensation_val = _clean_field("compensation")
             if not compensation_val or compensation_val.lower() in ["", "none", "null"]:
                 compensation_val = "Thỏa thuận"

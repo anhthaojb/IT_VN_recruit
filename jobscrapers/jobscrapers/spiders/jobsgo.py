@@ -25,7 +25,7 @@ class JobsgoSpider(scrapy.Spider):
         if "hôm nay" in text or "today" in text:
             return False
         if "hôm qua" in text or "yesterday" in text:
-            return False  # FIX: hôm qua vẫn còn hợp lệ với daily
+            return False  
 
         m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", posted_text)
         if m:
@@ -33,7 +33,7 @@ class JobsgoSpider(scrapy.Spider):
                 posted_date = datetime(
                     int(m.group(3)), int(m.group(2)), int(m.group(1))
                 ).date()
-                return (datetime.now().date() - posted_date).days > 2  # buffer 2 ngày
+                return (datetime.now().date() - posted_date).days > 2  
             except ValueError:
                 pass
         return False
@@ -70,8 +70,7 @@ class JobsgoSpider(scrapy.Spider):
             yield scrapy.Request(
                 url=job_url,
                 meta={
-                    # FIX: KHÔNG dùng playwright cho detail page
-                    # Jobsgo detail page thường render được bằng HTTP thường
+
                     "list_title"    : job.css("h3.job-title::text").get("").strip(),
                     "list_company"  : job.css("div.company-title::text").get("").strip(),
                     "list_salary"   : job.css("div.text-primary span:first-child::text").get("").strip(),
@@ -163,25 +162,22 @@ class JobsgoSpider(scrapy.Spider):
         item["company_industry"]= None
         item["scraped_at"]      = datetime.now()
 
-        # FIX: yield item trước, company page là bonus không bắt buộc
         company_url = response.css("div.card-company a::attr(href)").get()
         if company_url:
             yield scrapy.Request(
                 url=response.urljoin(company_url),
                 meta={
-                    # FIX: KHÔNG dùng playwright, giảm timeout
                     "job_item": item,
-                    "handle_httpstatus_list": [404, 403],  # không crash nếu lỗi
+                    "handle_httpstatus_list": [404, 403], 
                 },
                 callback=self.parse_company_page,
-                errback=self.company_errback,  # FIX: xử lý timeout/error
+                errback=self.company_errback, 
             )
         else:
-            yield item  # không có company URL → yield luôn
+            yield item  
 
     def parse_company_page(self, response):
         item = response.meta["job_item"]
-        # Nếu bị redirect hay lỗi → yield item gốc không có company info
         if response.status in (403, 404):
             yield item
             return
@@ -195,7 +191,6 @@ class JobsgoSpider(scrapy.Spider):
         yield item
 
     def company_errback(self, failure):
-        # FIX: Timeout/error ở company page → vẫn yield item job
         item = failure.request.meta.get("job_item")
         if item:
             self.logger.warning(f"[jobsgo] Company page lỗi — yield item không có company info")

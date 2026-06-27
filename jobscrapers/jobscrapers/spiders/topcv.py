@@ -46,9 +46,6 @@ class TopcvSpider(scrapy.Spider):
             re.IGNORECASE,
         ))
 
-    # ------------------------------------------------------------------
-    # start — listing page dùng Playwright để qua Cloudflare
-    # ------------------------------------------------------------------
 
     async def start(self):
         yield scrapy.Request(
@@ -66,10 +63,6 @@ class TopcvSpider(scrapy.Spider):
                 ],
             },
         )
-
-    # ------------------------------------------------------------------
-    # parse — listing
-    # ------------------------------------------------------------------
 
     def parse(self, response, page=1):
         if self.stopped:
@@ -100,7 +93,6 @@ class TopcvSpider(scrapy.Spider):
                     job_url,
                     callback=self.parse_job_page,
                     cb_kwargs={"job_posted_at": posted_text},
-                    # Detail page KHÔNG cần Playwright — HTTP thường đủ
                 )
 
         next_page = page + 1
@@ -121,9 +113,6 @@ class TopcvSpider(scrapy.Spider):
                 },
             )
 
-    # ------------------------------------------------------------------
-    # parse_job_page — giữ nguyên hoàn toàn
-    # ------------------------------------------------------------------
 
     def parse_job_page(self, response, job_posted_at=""):
         def css(selector):

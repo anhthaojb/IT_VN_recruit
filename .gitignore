@@ -22,3 +22,4 @@ typesence.py
 company_stock.py
 masothue.py
 !company.csv
+*.pbix

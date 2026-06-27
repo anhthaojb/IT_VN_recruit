@@ -45,10 +45,6 @@ class Timviec365Spider(scrapy.Spider):
                 pass
         return False
 
-    # ------------------------------------------------------------------
-    # parse — danh sách job
-    # ------------------------------------------------------------------
-
     def parse(self, response):
         if self.stopped:
             return
@@ -68,7 +64,7 @@ class Timviec365Spider(scrapy.Spider):
                     callback=self.parse_job_page,
                 )
 
-        # Next page — daily chỉ crawl tối đa 3 trang
+
         if not self.stopped:
             next_anchors = response.css('.pagi_pre a')
             next_page = None
@@ -80,9 +76,6 @@ class Timviec365Spider(scrapy.Spider):
             if next_page and (self._get_mode() == "full" or self.page_count < 3):
                 yield response.follow(next_page, callback=self.parse)
 
-    # ------------------------------------------------------------------
-    # parse_job_page — chi tiết job
-    # ------------------------------------------------------------------
 
     def parse_job_page(self, response):
         def xpath(query):
@@ -90,8 +83,6 @@ class Timviec365Spider(scrapy.Spider):
 
         def xpath_all(query):
             return " ".join(response.xpath(query).getall()).strip()
-
-        # ── Check date TRƯỚC khi build item ──────────────────────────
         job_posted_at = response.css(
     "span.timeUpdate.dataNewReal::text"
 ).get("").strip()
@@ -100,8 +91,6 @@ class Timviec365Spider(scrapy.Spider):
                 f"[timviec365][daily] Job cũ ({job_posted_at!r}) — bỏ qua: {response.url}"
             )
             return
-
-        # ── Build item ────────────────────────────────────────────────
         item = JobItem()
         item["website"]          = "timviec365"
         item["job_url"]          = response.url

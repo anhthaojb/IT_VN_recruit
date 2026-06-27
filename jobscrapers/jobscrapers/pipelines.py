@@ -1,27 +1,16 @@
-"""
-pipelines.py — Supabase (PostgreSQL) version
-=============================================
-"""
+
 from itemadapter import ItemAdapter
 import psycopg2
-import psycopg2.extras
 import re
 import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
-from scrapy import item
 from jobscrapers.lookups import (
     VW_JOB_TYPE, VW_EDUCATION, VW_JOB_LEVEL, VW_COMPANY_SIZE,
     ITVIEC_WORK_MODE_MAP, ITVIEC_VALID_OUTPUTS, ITVIEC_WORK_MODE_INPUTS,
 )
-
-
-
-# ==============================================================================
-# 1. HELPERS dùng chung  (logic không đổi)
-# ==============================================================================
 
 def _clean_date(text: str) -> str:
     if not text:
@@ -89,10 +78,6 @@ _LI_TIME_PAT  = re.compile(
 )
 _IT_POSTED_PAT = re.compile(r"^posted\s+(.+)$", re.IGNORECASE)
 
-
-# ==============================================================================
-# 2. clean_dict()  (logic không đổi, giữ nguyên toàn bộ)
-# ==============================================================================
 
 def clean_dict(raw: dict) -> dict:
     item    = {}
@@ -204,11 +189,6 @@ def clean_dict(raw: dict) -> dict:
 
     return item
 
-
-# ==============================================================================
-# 3. DB CONNECTION  [THAY ĐỔI 1+2 — psycopg2 thay mysql.connector]
-# ==============================================================================
-
 def get_db_connection():
     """
     Kết nối PostgreSQL Local qua psycopg2.
@@ -218,10 +198,6 @@ def get_db_connection():
     conn.autocommit = False
     cur  = conn.cursor()
     return conn, cur
-
-# ==============================================================================
-# 4. SQL  [THAY ĐỔI 3 — ON CONFLICT thay ON DUPLICATE KEY UPDATE]
-# ==============================================================================
 
 _INSERT_SQL = """
     INSERT INTO staging_jobs (
@@ -280,10 +256,6 @@ def _insert_params(item: dict) -> tuple:
         False if website == "linkedin" else True,  # linkedin → AI xử lý sau
     )
 
-# ==============================================================================
-# 5. save_to_db  [THAY ĐỔI 3+4 — rowcount logic khác psycopg2]
-# ==============================================================================
-
 def save_to_db(cur, conn, item: dict) -> tuple[bool, str]:
     """
     Lưu item vào Supabase.
@@ -314,12 +286,6 @@ def save_to_db(cur, conn, item: dict) -> tuple[bool, str]:
         print(f"    ✗ PostgreSQL error: {e}")
         conn.rollback()
         return False, "error"
-
-
-# ==============================================================================
-# 6. RunTracker  [THAY ĐỔI 4 — RETURNING id thay lastrowid]
-# ==============================================================================
-
 class RunTracker:
     def __init__(self, website: str, cur, conn,
                  session_id: str = None, triggered_by: str = "manual"):
@@ -398,16 +364,11 @@ class RunTracker:
             status, self.run_id,
         ))
         self.conn.commit()
-        print(f"\n📊 Run #{self.run_id} [{self.website}] {status} "
+        print(f"\nRun #{self.run_id} [{self.website}] {status} "
               f"| session={self.session_id} "
               f"| new={self.counts['new']} updated={self.counts['updated']} "
               f"dup={self.counts['duplicate']} invalid={self.counts['invalid']} "
               f"({duration_sec}s)")
-
-
-# ==============================================================================
-# 7. Scrapy Pipelines
-# ==============================================================================
 
 class CleaningPipeline:
     def process_item(self, item, spider):
@@ -444,14 +405,7 @@ class SaveToPostgresPipeline:
         self.cur.close()
         self.conn.close()
 
-
-# Alias để settings.py không cần sửa
 SaveToMySQLPipeline = SaveToPostgresPipeline
-
-
-# ==============================================================================
-# 8. ensure_db_connection  [THAY ĐỔI 5 — psycopg2 không có .ping()]
-# ==============================================================================
 
 def ensure_db_connection(cur, conn):
     """Kiểm tra connection còn sống không — psycopg2 dùng SELECT 1."""
@@ -464,6 +418,4 @@ def ensure_db_connection(cur, conn):
         except Exception:
             pass
         conn_new, cur_new = get_db_connection()
-        # Cập nhật in-place không được trong Python — caller phải reassign
-        # Trả về cur mới để caller dùng
         return cur_new

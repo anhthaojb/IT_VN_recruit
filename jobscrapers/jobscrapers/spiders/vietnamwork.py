@@ -42,11 +42,6 @@ class VietnamworkSpider(scrapy.Spider):
         text = re.sub(r"<[^>]+>", " ", text)
         text = re.sub(r"\s+", " ", text)
         return text.strip()
-
-    # ------------------------------------------------------------------
-    # start
-    # ------------------------------------------------------------------
-
     async def start(self):
         yield self._build_request(page=0)
 
@@ -69,9 +64,6 @@ class VietnamworkSpider(scrapy.Spider):
             cb_kwargs={"page": page},
         )
 
-    # ------------------------------------------------------------------
-    # parse — lấy trực tiếp từ search API, không cần detail
-    # ------------------------------------------------------------------
 
     def parse(self, response, page=0):
         if self.stopped:
@@ -102,12 +94,7 @@ class VietnamworkSpider(scrapy.Spider):
         if not self.stopped and page + 1 < nb_pages:
             yield self._build_request(page=page + 1)
 
-    # ------------------------------------------------------------------
-    # _map_job — map từ search API data
-    # ------------------------------------------------------------------
-
     def _map_job(self, job: dict) -> JobItem:
-       # ── Lương ──────────────────────────────────────────────────
         salary_min      = job.get("salaryMin", 0)
         salary_max      = job.get("salaryMax", 0)
         currency        = job.get("salaryCurrency", "")
@@ -120,18 +107,13 @@ class VietnamworkSpider(scrapy.Spider):
             compensation = f"{salary_min:,} - {salary_max:,} {currency} {period_suffix}".strip()
         else:
             compensation = job.get("prettySalary", "Thỏa thuận")
-        # ── Địa điểm ───────────────────────────────────────────────
         locations = job.get("workingLocations") or []
         location  = locations[0].get("cityNameVI", "") if locations else ""
-
-        # ── Ngành nghề ─────────────────────────────────────────────
         industries = job.get("industriesV3") or []
         company_industry = ", ".join(
             i.get("industryV3NameVI", "") for i in industries
             if i.get("industryV3NameVI")
         )
-
-        # ── Job category ───────────────────────────────────────────
         job_func     = job.get("jobFunction") or {}
         children     = job_func.get("children") or []
         job_category = (
@@ -140,11 +122,8 @@ class VietnamworkSpider(scrapy.Spider):
             else job_func.get("parentNameVI", "")
         )
 
-        # ── Mô tả ──────────────────────────────────────────────────
         job_description = self.strip_html(job.get("jobDescription", ""))
         job_requirement = self.strip_html(job.get("jobRequirement", ""))
-
-        # ── Skills → nối vào cuối job_description ──────────────────
         skills_raw = job.get("skills") or []
         if skills_raw:
             skills_str = "Skills: " + ", ".join(

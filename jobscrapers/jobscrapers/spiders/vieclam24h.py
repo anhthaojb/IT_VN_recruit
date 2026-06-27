@@ -84,7 +84,7 @@ class Vieclam24hSpider(scrapy.Spider):
             if job_url:
                 clean_url = self._strip_qs(response.urljoin(job_url))
 
-                # ── Chỉ lấy job thuộc ngành IT (o8) ──────────────
+                # ── Chỉ lấy job thuộc ngành IT 
                 if "/it-phan-mem/" not in clean_url and "/it-phan-cung-mang/" not in clean_url:
                     self.logger.debug(f"[vieclam24h] Bỏ qua ngoài ngành: {clean_url}")
                     continue
@@ -102,9 +102,6 @@ class Vieclam24hSpider(scrapy.Spider):
                 self.logger.info(f"[vieclam24h] → Trang {self.page_count + 1}: {next_page}")
                 yield response.follow(next_page, callback=self.parse)
 
-    # ------------------------------------------------------------------
-    # parse_job_page — chi tiết job
-    # ------------------------------------------------------------------
 
     def parse_job_page(self, response, job_posted_at_card=""):
         def xpath(query):
@@ -112,8 +109,6 @@ class Vieclam24hSpider(scrapy.Spider):
 
         def xpath_all(query):
             return " ".join(response.xpath(query).getall()).strip()
-
-        # ── Check date TRƯỚC khi build item ──────────────────────────
         job_posted_at = job_posted_at_card or xpath(
             "//div[./div[text()='Ngày đăng']]/div[2]/text()"
         )
@@ -123,12 +118,11 @@ class Vieclam24hSpider(scrapy.Spider):
             )
             return
 
-        # ── Build item ────────────────────────────────────────────────
         item = JobItem()
         item["website"]          = "vieclam24h"
         item["job_url"]          = response.url
         item["job_title"]        = response.css("h1::text").get("").strip()
-        item["job_posted_at"]    = job_posted_at or None  # dùng lại biến đã có
+        item["job_posted_at"]    = job_posted_at or None 
         item["compensation"]     = xpath(
             "//div[div[text()='Mức lương']]/div[contains(@class,'text-14')]/text()"
         )

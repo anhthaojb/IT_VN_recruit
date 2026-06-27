@@ -24,14 +24,12 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from jobscrapers.pipelines import RunTracker, clean_dict, save_to_db, get_db_connection
-# ===== CLI =====
 parser = argparse.ArgumentParser()
 parser.add_argument("--mode", default="daily", choices=["daily", "full"])
 args, unknown = parser.parse_known_args()
 if unknown and unknown[0] in ["daily", "full"]:
     args.mode = unknown[0]
 
-# ===== CONFIG =====
 MAX_JOBS_PER_KEYWORD = 5
 JOB_DETAIL_WAIT      = 12
 MIN_ABOUT_JOB_CHARS  = 200
@@ -80,11 +78,6 @@ NOISE_PAT = re.compile(
     re.IGNORECASE,
 )
 
-
-# =========================================================
-#  URL Normalization
-# =========================================================
-
 def _normalize_li_url(url: str) -> str:
     if not url:
         return url
@@ -98,10 +91,6 @@ def _normalize_li_url(url: str) -> str:
         return f"https://www.linkedin.com/jobs/view/{job_id}/"
     return url.split("?")[0]
 
-
-# =========================================================
-#  Helpers
-# =========================================================
 
 def safe_text(el):
     try:
@@ -167,10 +156,6 @@ def _is_old_linkedin(posted_text: str) -> bool:
         "month": n * 30, "year": n * 365,
     }.get(unit, 0)
     return age_days > DAILY_MAX_AGE_DAYS
-
-# =========================================================
-#  Driver + Login
-# =========================================================
 
 def init_driver():
     opts = uc.ChromeOptions()
@@ -259,7 +244,7 @@ def login(driver):
             time.sleep(2)
             print(f"✓ Tự điền form thành công — {driver.current_url}")
         except Exception as e:
-            print(f"⚠️  Tự điền thất bại ({e}) — chờ login thủ công")
+            print(f"Tự điền thất bại ({e}) — chờ login thủ công")
 
     current = driver.current_url
     if any(x in current for x in ["/checkpoint", "/challenge", "/uas/login", "/login"]):
@@ -273,14 +258,11 @@ def login(driver):
     driver.get("https://www.linkedin.com/jobs")
     time.sleep(3)
     if not _is_logged_in(driver):
-        raise Exception(f"❌ Chưa login được — URL: {driver.current_url}")
+        raise Exception(f" Chưa login được — URL: {driver.current_url}")
     save_cookies(driver)
-    print(f"✅ Đăng nhập thành công — {driver.current_url}")
+    print(f" Đăng nhập thành công — {driver.current_url}")
 
 
-# =========================================================
-#  Parse job detail  (không đổi)
-# =========================================================
 
 def parse_job(driver, keyword, category):
     raw_about_job = ""
@@ -387,7 +369,7 @@ def parse_job(driver, keyword, category):
                     pass
             company_industry = raw_info.strip().strip("·").strip() or None
         except StaleElementReferenceException:
-            pass  # company info không quan trọng, bỏ qua nếu stale
+            pass  
 
     return {
         "website"         : "linkedin",
@@ -415,9 +397,6 @@ def parse_job(driver, keyword, category):
     }
 
 
-# =========================================================
-#  Core scrape
-# =========================================================
 
 def _get_cards(driver):
     return wait_any_css(driver, SEL_JOB_CARDS, timeout=12)
@@ -478,18 +457,18 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
         driver.execute_script("window.stop();")
 
     time.sleep(random.uniform(3, 6))
-    print(f"\n🔍 [{category}] {keyword!r} | mode={mode}")
+    print(f"\n [{category}] {keyword!r} | mode={mode}")
 
     current = driver.current_url
     if any(x in current for x in ["/login", "/checkpoint", "/authwall"]):
-        print(f"  ⛔ Bị redirect — thử login lại")
+        print(f"   Bị redirect — thử login lại")
         login(driver)
         driver.get(url)
         time.sleep(random.uniform(3, 6))
 
     matched, _ = wait_any_css(driver, SEL_JOB_CARDS, timeout=15)
     if not matched:
-        print("  ⚠️  Job list không load — bỏ qua")
+        print("   Job list không load — bỏ qua")
         return 0, 0
     count_new = count_updated = 0
     page = 1
@@ -522,14 +501,14 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
                 driver, SEL_DETAIL_LOADED, timeout=JOB_DETAIL_WAIT
             )
             if not matched_detail:
-                print(f"    ⚠️  Detail không load (card {card_index}) — skip")
+                print(f"      Detail không load (card {card_index}) — skip")
                 card_index += 1
                 time.sleep(random.uniform(2, 5))
                 continue
 
             normalized_url = _normalize_li_url(driver.current_url)
             if normalized_url in seen_urls:
-                print("    ⏭️  Đã có trong DB — skip")
+                print("     Đã có trong DB — skip")
                 card_index += 1
                 continue
 
@@ -538,7 +517,7 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
                 card_index += 1
                 continue
             if mode == "daily" and _is_old_linkedin(raw.get("job_posted_at", "")):
-                print(f"    🕰️  Job cũ ({raw['job_posted_at']!r}) — skip")
+                print(f"    Job cũ ({raw['job_posted_at']!r}) — skip")
                 card_index += 1
                 continue
             seen_urls.add(normalized_url)
@@ -551,14 +530,14 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
             tracker.record(status, cleaned)
             if status == "new":
                 count_new += 1
-                print(f"    ✅ MỚI [{count_new}] {cleaned.get('job_title')} @ {cleaned.get('company_title')}")
+                print(f"    MỚI [{count_new}] {cleaned.get('job_title')} @ {cleaned.get('company_title')}")
             elif status == "updated":
                 count_updated += 1
-                print(f"    🔄 UPDATED [{count_updated}] {cleaned.get('job_title')}")
+                print(f"     UPDATED [{count_updated}] {cleaned.get('job_title')}")
             elif status == "duplicate":
-                print("    ⏭️  Không đổi")
+                print("   Không đổi")
             else:
-                print(f"    ❌ {status.upper()}")
+                print(f"  {status.upper()}")
 
             card_index += 1
 
@@ -568,7 +547,7 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
         _, cards_before = _get_cards(driver)
         anchor = cards_before[0] if cards_before else None
         if not _click_next_page(driver):
-            print("  📭 Hết trang")
+            print("  Hết trang")
             break
 
         try:
@@ -583,17 +562,13 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
 
     return count_new, count_updated
 
-# =========================================================
-#  Main
-# =========================================================
-
 def main():
     driver  = init_driver()
     conn = cur = None
     tracker  = None
 
     def _exit(sig, frame):
-        print("\n⛔ Ctrl+C — đóng kết nối...")
+        print("\n Ctrl+C — đóng kết nối...")
         try:  driver.quit()
         except Exception: pass
         try:
@@ -609,7 +584,6 @@ def main():
         conn, cur = get_db_connection()
         tracker   = RunTracker(website="linkedin", cur=cur, conn=conn)
 
-        # [THAY ĐỔI 3] PostgreSQL interval syntax
         if args.mode == "daily":
             cur.execute(
                 "SELECT job_url FROM staging_jobs WHERE website='linkedin' "
@@ -619,7 +593,7 @@ def main():
             cur.execute("SELECT job_url FROM staging_jobs WHERE website='linkedin'")
 
         seen_urls = {_normalize_li_url(row[0]) for row in cur.fetchall()}
-        print(f"✅ Loaded {len(seen_urls)} URL từ DB | mode={args.mode}")
+        print(f" Loaded {len(seen_urls)} URL từ DB | mode={args.mode}")
 
         total_new = total_updated = 0
         summary   = {}
@@ -633,7 +607,7 @@ def main():
                     )
                 except Exception as e:
                     if "invalid session" in str(e).lower() or "session deleted" in str(e).lower():
-                        print(f"  ⚠️  Chrome crash — restart driver...")
+                        print(f"    Chrome crash — restart driver...")
                         try:
                             driver.service.process.kill()
                             driver.quit()
@@ -643,7 +617,7 @@ def main():
                         login(driver)
                         new, updated = 0, 0
                     else:
-                        print(f"  ❌ keyword {keyword!r} lỗi: {e}")
+                        print(f"  keyword {keyword!r} lỗi: {e}")
                         new, updated = 0, 0
                 
                 summary[category][keyword] = (new, updated)
@@ -655,8 +629,8 @@ def main():
 
         print(f"\n{'='*55}")
         print(f"🎉 HOÀN THÀNH | mode={args.mode}")
-        print(f"   ✅ Job mới    : {total_new}")
-        print(f"   🔄 Job updated: {total_updated}")
+        print(f"   Job mới    : {total_new}")
+        print(f"   Job updated: {total_updated}")
         print(f"{'='*55}")
         for cat, kw_counts in summary.items():
             cat_new     = sum(v[0] for v in kw_counts.values())
@@ -675,7 +649,7 @@ def main():
             if conn: conn.close()
         except Exception: pass
         try:
-            driver.service.process.kill()  # kill process trước
+            driver.service.process.kill()  
             driver.quit()
         except Exception:
             pass

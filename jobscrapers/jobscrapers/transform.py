@@ -1,14 +1,4 @@
 
-# etl_supabase.py
-# ==============================================================================
-# RECRUITMENT ETL — Phiên bản Local PostgreSQL
-#
-# THAY ĐỔI SO VỚI BẢN GỐC (Supabase remote):
-#   [LOCAL-1] SRC_TABLE  = "staging_jobs"  (thay vì "jobs")
-#   [LOCAL-2] DATABASE_URL default → local PostgreSQL
-#             (vẫn đọc từ env var DATABASE_URL nếu có)
-#
-
 import pathlib
 import re
 import time
@@ -24,11 +14,6 @@ load_dotenv()
 _project_root = str(pathlib.Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
-
-TYPESENSE_ENABLED: bool = False
-# Typesense disabled
-from rapidfuzz import fuzz as _fuzz
-from tqdm import tqdm
 from datetime import datetime, timedelta, date
 from lookups import (
     PROVINCE_CANONICAL, GEO_KEYS_SORTED, REGION_MAP,
@@ -37,10 +22,8 @@ from lookups import (
     LEVEL_MAP, EXP_TO_LEVEL,
     EDUCATION_MAP,
     INDUSTRY_TREE,
-    COMPANY_TYPE_PATTERNS, COMPANY_TYPE_STRIP,
+    COMPANY_TYPE_PATTERNS,
     JOB_CATEGORY_MAP, IT_TITLES,
-    JOB_TITLE_MAP,
-    NON_IT_TITLE_MAP,
     MAJOR_MAP,
     CERT_KW, LANG_CERT_TO_LANG,
     SKILL_MAP,
@@ -49,40 +32,24 @@ from lookups import (
     COMPILED_NON_IT_TITLE_MAP
 )
 
-# ==============================================================================
-# 0. CONFIG
-# ==============================================================================
-
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql+psycopg2://postgres:123456@localhost:5432/recruitment_dw"
 )
 
-# [LOCAL-1] staging_jobs thay vì jobs
+
 SRC_TABLE   = "staging_jobs"
 FACT_TABLE  = "fact_jobs_etl"
 LOG_TABLE   = "fact_etl_log"
 ERROR_TABLE = "fact_etl_error"
 
-TS_CONFIG = {
-    "host":    os.environ.get("TYPESENSE_HOST",    "localhost"),
-    "port":    os.environ.get("TYPESENSE_PORT",    "8108"),
-    "api_key": os.environ.get("TYPESENSE_API_KEY", "changeme123"),
-    "timeout": 3,
-}
 
-# ==============================================================================
-# 0.5 MODULE-LEVEL CONSTANTS
-# ==============================================================================
 
 _BOOL_COLS: frozenset[str] = frozenset({
     "is_it", "is_vn", "is_valid", "is_duplicate",
     "is_negotiable", "is_exp_required",
 })
 
-# ==============================================================================
-# 0.6 COMPANY NORMALIZE
-# ==============================================================================
 
 _COMPANY_TYPE_NORMALIZE = [
     (r'\bTNHH\s+MTV\b',                             'Công ty TNHH MTV'),
@@ -120,53 +87,6 @@ def _normalize_company_name(name: str) -> str:
         if n:
             break
     return result
-
-
-def _clean_strict(text: str) -> str:
-    if not text:
-        return ""
-    s = text.lower().strip()
-    s = s.replace('đ', 'd')
-    s = ''.join(c for c in unicodedata.normalize('NFKD', s)
-                if not unicodedata.combining(c))
-    noise_patterns = (
-        r'\b(cong ty|cty|tnhh|mtv|co phan|ctcp|jsc|ltd|llc|inc'
-        r'|group|tap doan|viet nam|vietnam|vn)\b'
-    )
-    s = re.sub(noise_patterns, ' ', s)
-    s = re.sub(r'[^\w\s]', ' ', s)
-    return re.sub(r'\s+', ' ', s).strip()
-
-
-def _match_search_typesense(ts, name_clean: str,
-                             retries: int = 1, delay: float = 0.5) -> list:
-    params_infix = {
-        'q': name_clean, 'query_by': 'name_official',
-        'per_page': 5, 'prefix': 'false', 'sort_by': '_text_match:desc',
-    }
-    params_prefix = {
-        'q': name_clean, 'query_by': 'name_official',
-        'per_page': 5, 'prefix': 'true', 'sort_by': '_text_match:desc',
-    }
-    last_err = None
-    for attempt in range(retries):
-        try:
-            res  = ts.collections['companies'].documents.search(params_infix)
-            hits = res.get('hits', [])
-            if hits:
-                return hits
-            res2 = ts.collections['companies'].documents.search(params_prefix)
-            return res2.get('hits', [])
-        except Exception as e:
-            last_err = e
-            if attempt < retries - 1:
-                time.sleep(delay * (attempt + 1))
-    raise last_err
-
-
-# ==============================================================================
-# 2. HELPERS
-# ==============================================================================
 
 def _s(val) -> str:
     if val is None or (isinstance(val, float) and np.isnan(val)):
@@ -281,8 +201,8 @@ _IT_TITLE_KW_FALLBACK: list[str] = [
     "blockchain", "iot", "embedded", "firmware",
 ]
 _TITLE_NOISE_PATTERNS = [
-    r"^(?:\[[^\]]*\]|\([^)]*\))\s*",    # [bất kỳ] hoặr (bất kỳ) ở ĐẦU
-    r"\s*(?:\[[^\]]*\]|\([^)]*\))\s*$", # [bất kỳ] hoặc (bất kỳ) ở CUỐI — có dấu phẩy
+    r"^(?:\[[^\]]*\]|\([^)]*\))\s*",    
+    r"\s*(?:\[[^\]]*\]|\([^)]*\))\s*$", 
     r"\btuyển\s*(gấp|dụng)?\b",
     r"\bgấp\b",
     r"\bremote\b",
@@ -324,13 +244,13 @@ def _detect_job_title(clean_title: str) -> str | None:
         return None
     text = clean_title.lower()
 
-    # 1. JOB_TITLE_MAP — đã compile sẵn, sort dài trước
+ 
     for std_title, patterns in COMPILED_JOB_TITLE_MAP:
         for pat in patterns:
             if pat.search(text):
                 return std_title
 
-    # 2. ROLE_WORDS + TECH_DOMAIN inference — giữ nguyên
+  
     role   = next((v for k, v in ROLE_WORDS.items()  if k in text), None)
     domain = next((v for k, v in TECH_DOMAIN.items() if k in text), None)
     if role:
@@ -341,7 +261,7 @@ def _detect_job_title(clean_title: str) -> str | None:
         if inferred:
             return inferred
 
-    # 3. NON_IT_TITLE_MAP — đã compile sẵn
+
     for en_title, patterns in COMPILED_NON_IT_TITLE_MAP:
         for pat in patterns:
             if pat.search(text):
@@ -944,10 +864,6 @@ def parse_number_recruit(num_raw, job_title_raw):
     return max(found) if found else 1
 
 
-# ==============================================================================
-# 3. ERROR COLLECTOR
-# ==============================================================================
-
 class ErrorCollector:
     def __init__(self):
         self._rows: list[dict] = []
@@ -986,10 +902,6 @@ def _nan_to_none(rows):
     return cleaned
 
 
-# ==============================================================================
-# 3.5 DEDUP HELPERS
-# ==============================================================================
-
 _TECH_IN_TITLE: list[str] = [
     "java", "python", "golang", " go ", "nodejs", "node.js",
     "php", "react", "angular", "vue", "flutter",
@@ -1008,31 +920,9 @@ def _title_dedup_key(title_detect, title_clean):
     return f"{base}::{tech}" if tech else base
 
 
-# ==============================================================================
-# 4. ETL CLASS
-# ==============================================================================
-
 class RecruitmentETL:
     def __init__(self, db_url: str):
         self.engine = sqlalchemy.create_engine(db_url)
-        self._ts = None
-        if TYPESENSE_ENABLED:
-            try:
-                self._ts = typesense.Client({
-                    "nodes": [{"host": TS_CONFIG["host"],
-                               "port": TS_CONFIG["port"],
-                               "protocol": "http"}],
-                    "api_key": TS_CONFIG["api_key"],
-                    "connection_timeout_seconds": TS_CONFIG["timeout"],
-                })
-                self._ts.collections['companies'].documents.search(
-                    {'q': 'test', 'query_by': 'name_official', 'per_page': 1}
-                )
-                print("✅ Typesense kết nối OK")
-            except Exception as e:
-                print(f"⚠️  Typesense không kết nối được: {e} — company match bị tắt")
-                self._ts = None
-
     def _start_log(self, mode: str, target_date) -> int:
         with self.engine.begin() as conn:
             result = conn.execute(sqlalchemy.text(f"""
@@ -1084,7 +974,7 @@ class RecruitmentETL:
                     f"WHERE scraped_at::date = '{date_str}' and ai_processed = True", conn
                 )
                 target_date = date_str
-            else:  # today
+            else:  
                 df = pd.read_sql(
                     f"SELECT * FROM {SRC_TABLE} "
                     f"WHERE scraped_at::date = CURRENT_DATE and ai_processed = True", conn
@@ -1272,7 +1162,7 @@ class RecruitmentETL:
                 "etl_run_id", "etl_processed_at",
             ]
 
-            # --- BẮT ĐẦU ĐOẠN SỬA ---
+         
             counts = {"new": 0, "updated": 0}
             generated_ids = []
 
@@ -1280,15 +1170,12 @@ class RecruitmentETL:
                 for i in range(0, len(df), 20):
                     chunk = df.iloc[i:i+20]
                     
-                    # Làm sạch dữ liệu của chunk trước
+              
                     cleaned_rows = [_clean_row(r) for r in chunk.to_dict("records")]
                     
                     for row_dict in cleaned_rows:
-                        # Bắt buộc loại bỏ cột ID khỏi tập dữ liệu đầu vào để kích hoạt cột tự tăng SERIAL ở Postgres
                         row_dict.pop("etl_id", None)
                         row_dict.pop("id", None)
-                        
-                        # Lấy danh sách các cột thực tế gửi đi (không bao gồm id)
                         cols = list(row_dict.keys())
                         placeholders = ", ".join([f":{c}" for c in cols])
                         col_list     = ", ".join(cols)
@@ -1298,7 +1185,6 @@ class RecruitmentETL:
                             for c in update_cols if c in cols
                         )
                         
-                        # Sử dụng RETURNING xmax, etl_id để kiểm tra trạng thái và lấy ID tự sinh từ Postgres
                         sql = f"""
                             INSERT INTO {FACT_TABLE} ({col_list})
                             VALUES ({placeholders})
@@ -1311,7 +1197,6 @@ class RecruitmentETL:
                             xmax, new_id = result[0], result[1]
                             generated_ids.append(new_id)
                             
-                            # Trong PostgreSQL: xmax = 0 tức là bản ghi mới (INSERT), xmax != 0 là bản ghi cũ bị đè (UPDATE)
                             if xmax == 0:
                                 counts["new"] += 1
                             else:
@@ -1322,7 +1207,7 @@ class RecruitmentETL:
                     time.sleep(0.2)
             df["etl_id"] = generated_ids
 
-            print(f"   ✅ UPSERT hoàn thành: {counts['new']:,} dòng mới, {counts['updated']:,} dòng cập nhật.")
+            print(f"   UPSERT hoàn thành: {counts['new']:,} dòng mới, {counts['updated']:,} dòng cập nhật.")
             return counts
 
     def _save_errors(self, ec: ErrorCollector, run_id: int):
@@ -1332,83 +1217,6 @@ class RecruitmentETL:
         df_err.to_sql(ERROR_TABLE, self.engine, if_exists="append",
                       index=False, chunksize=500)
         print(f"   ⚠ Ghi {len(df_err)} error records.")
-
-    def _ts_client(self):
-        return typesense.Client({
-            'nodes': [{'host': TS_CONFIG["host"], 'port': TS_CONFIG["port"],
-                       'protocol': 'http'}],
-            'api_key':                    TS_CONFIG["api_key"],
-            'connection_timeout_seconds': TS_CONFIG["timeout"],
-        })
-
-    def _match_one_company(self, ts, name_raw: str, fallback: str) -> dict:
-        s_name = (name_raw or "").strip()
-        _base  = {"raw_name": name_raw, "company_name_clean": fallback, "status": "no_match"}
-        if not s_name:
-            return {**_base, "company_name_clean": "Unknown", "status": "empty"}
-        if any(kw in s_name.lower() for kw in ["client", "confidential", "ẩn danh"]):
-            return {**_base, "company_name_clean": "Confidential", "status": "confidential"}
-        cleaned_source = _clean_strict(s_name)
-        if not cleaned_source:
-            return _base
-        try:
-            hits = _match_search_typesense(ts, cleaned_source)
-        except Exception:
-            return _base
-        if not hits:
-            return _base
-        for h in hits:
-            official_name  = h["document"]["name_official"]
-            cleaned_target = _clean_strict(official_name)
-            if (_fuzz.ratio(cleaned_source, cleaned_target) >= 100
-                    and _fuzz.token_sort_ratio(cleaned_source, cleaned_target) >= 100):
-                return {"raw_name": name_raw, "company_name_clean": official_name, "status": "ok"}
-        return _base
-
-    def _match_and_update_companies(self, run_id: int):
-        if not TYPESENSE_ENABLED or self._ts is None:
-            print("   ⏭️  Company match bị tắt (TYPESENSE_ENABLED=false)")
-            with self.engine.begin() as conn:
-                conn.execute(sqlalchemy.text(f"""
-                    UPDATE {FACT_TABLE}
-                    SET    company_name_clean = company_title_clean
-                    WHERE  etl_run_id = :rid
-                      AND  company_name_clean IS NULL
-                """), {"rid": run_id})
-            return
-
-        print("\n⏳ [3.5/5] Đối sánh tên công ty với Typesense...")
-        with self.engine.connect() as conn:
-            df_co = pd.read_sql(f"""
-                SELECT DISTINCT company_title, company_title_clean
-                FROM {FACT_TABLE}
-                WHERE etl_run_id = {run_id}
-                  AND company_title IS NOT NULL
-            """, conn)
-
-        if df_co.empty:
-            print("   Không có công ty nào cần xử lý.")
-            return
-
-        ts      = self._ts_client()
-        results = []
-        for _, r in tqdm(df_co.iterrows(), total=len(df_co), desc="   Matching", unit="cty"):
-            results.append(self._match_one_company(
-                ts, name_raw=r["company_title"], fallback=r["company_title_clean"]))
-            time.sleep(0.01)
-
-        df_res = pd.DataFrame(results)
-        with self.engine.begin() as conn:
-            for _, row in df_res.iterrows():
-                conn.execute(sqlalchemy.text(f"""
-                    UPDATE {FACT_TABLE}
-                    SET    company_name_clean = :cname
-                    WHERE  etl_run_id = :run_id AND company_title = :raw
-                """), {"cname": row["company_name_clean"],
-                       "run_id": run_id, "raw": row["raw_name"]})
-
-        n_ok = int((df_res["status"] == "ok").sum())
-        print(f"   ✅ {len(df_res):,} công ty ({n_ok} Typesense | {len(df_res)-n_ok} fallback).")
 
     def run(self, mode: str = "today", date_str: str | None = None):
         print(f"\n{'=' * 62}")
@@ -1440,13 +1248,10 @@ class RecruitmentETL:
             counts["new"]     = saved["new"]
             counts["updated"] = saved["updated"]
 
-            print("\n⏳ [3.5/4] Match company (Typesense)...")
-            self._match_and_update_companies(run_id)
-
             print("\n⏳ [4/4] Save errors...")
             self._save_errors(ec, run_id)
 
-            # NOTE: Dedup + Load DW chạy riêng bởi dedup.py (bước tiếp theo trong pipeline)
+
 
             if counts["input"] > 0 and counts["errors"] / counts["input"] > 0.2:
                 status = "WARN"
@@ -1465,10 +1270,6 @@ class RecruitmentETL:
         print(f"{'=' * 62}\n")
         return df_clean
 
-
-# ==============================================================================
-# 5. CLI
-# ==============================================================================
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Recruitment ETL — Local PostgreSQL")

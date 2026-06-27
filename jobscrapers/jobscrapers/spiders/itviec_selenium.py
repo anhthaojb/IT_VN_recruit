@@ -76,10 +76,6 @@ KEYWORDS_BY_CATEGORY = {
     ],
 }
 
-# =========================================================
-#  SELECTORS
-# =========================================================
-
 SEL_JOB_CARDS = [
     "div.job-card[data-search--job-selection-job-slug-value]",
     "div.job-card",
@@ -103,9 +99,6 @@ def _is_old(posted_text: str, max_days: int = 3) -> bool:
     age = {"day": n, "week": n*7, "month": n*30, "year": n*365}.get(unit, 0)
     return age > max_days
 
-# =========================================================
-#  DEBUG HELPER
-# =========================================================
 
 def debug_job_structure(driver):
     """In ra tất cả h2/h3 và section tìm thấy trên trang detail."""
@@ -123,9 +116,6 @@ def debug_job_structure(driver):
         print(f"section class={sec.get('class')}, first 80 chars: {sec.get_text()[:80]!r}")
     print("=========================\n")
 
-# =========================================================
-#  SELENIUM HELPERS
-# =========================================================
 
 def safe_text(el):
     try:
@@ -197,25 +187,18 @@ def get_paragraph_by_heading(driver, heading_text):
         if heading_text.lower() not in tag.get_text(strip=True).lower():
             continue
 
-        # Đi lên tìm div/section cha gần nhất có nội dung thực
         parent = tag.find_parent(["div", "section"])
         while parent:
             text = parent.get_text(separator="\n", strip=True)
-            # Đủ dài và không phải toàn bộ trang
+
             if 50 < len(text) < 8000:
                 return text
             parent = parent.find_parent(["div", "section"])
 
     return ""
 
-# =========================================================
-#  PARSE JOB DETAIL
-# =========================================================
 
 def parse_job(driver, keyword, category, list_meta):
-    # ── Bật debug để xem HTML thực tế (tắt sau khi đã xác nhận selector) ──
-    # debug_job_structure(driver)
-
     job_title = get_text_first(driver, ["h1.text-it-black", "h1"])
     if not job_title:
         return None
@@ -298,10 +281,6 @@ def parse_job(driver, keyword, category, list_meta):
     if not job_requirement:
         job_requirement = get_paragraph_by_heading(driver, "skills and experience")
 
-    # ── In debug để kiểm tra kết quả ──────────────────────────────────────
-    # print(f"\n  [DEBUG] job_description ({len(job_description)} chars): {job_description[:120]!r}")
-    # print(f"  [DEBUG] job_requirement ({len(job_requirement)} chars): {job_requirement[:120]!r}")
-
     experience = None
     if job_requirement:
         m = re.search(
@@ -335,10 +314,6 @@ def parse_job(driver, keyword, category, list_meta):
         "skills"          : skills,
         "_search_keyword" : keyword,
     }
-
-# =========================================================
-#  PARSE CARD META
-# =========================================================
 
 def extract_card_meta(card):
     def css(sel):
@@ -378,10 +353,6 @@ def extract_card_meta(card):
         ),
         "skills"       : css_all('a[data-responsive-tag-list-target="tag"]'),
     }
-
-# =========================================================
-#  CORE SCRAPE — một keyword
-# =========================================================
 
 def _click_next_page(driver):
     next_el = find_first(driver, SEL_NEXT_PAGE, timeout=5)
@@ -474,7 +445,7 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
             if status == "new":
                 job_count += 1
 
-            status = "✅ mới" if status== "new" else "🔄 updated"
+            status = "mới" if status== "new" else "🔄 updated"
             print(f"  {status} [{job_count}] {item['job_title']} @ {item['company_title']}")
 
             time.sleep(0.8)
@@ -482,12 +453,12 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
         if stop_keyword or job_count >= MAX_JOBS_PER_KEYWORD:
             break
 
-        # driver.get(current_list_url)
+
         wait_any_css(driver, SEL_JOB_CARDS, timeout=10)
         time.sleep(0.5)
 
         if not _click_next_page(driver):
-            print("  📭 Hết trang")
+            print("  Hết trang")
             break
 
         wait_any_css(driver, SEL_JOB_CARDS, timeout=12)
@@ -515,33 +486,6 @@ def _is_logged_in(driver):
         By.CSS_SELECTOR,
         "a[href*='sign_out'], div.header-user, nav .avatar-wrapper"
     ))
-
-
-def save_cookies(driver):
-    COOKIE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(COOKIE_FILE, "w", encoding="utf-8") as f:
-        json.dump(driver.get_cookies(), f, ensure_ascii=False, indent=2)
-    print(f"✓ Đã lưu cookies → {COOKIE_FILE}")
-
-
-def load_cookies(driver):
-    if not COOKIE_FILE.exists():
-        return False
-    driver.get("https://itviec.com")
-    time.sleep(1)
-    with open(COOKIE_FILE, encoding="utf-8") as f:
-        cookies = json.load(f)
-    for cookie in cookies:
-        cookie.pop("sameSite", None)
-        cookie.pop("expiry", None)
-        try:
-            driver.add_cookie(cookie)
-        except Exception:
-            pass
-    driver.refresh()
-    time.sleep(2)
-    return True
-
 
 def login(driver):
     email = os.getenv("ITVIEC_EMAIL")
@@ -594,9 +538,6 @@ def login(driver):
         )
 
     print("✓ Đăng nhập tự động thành công")
-# =========================================================
-#  MAIN
-# =========================================================
 
 def main():
     parser = argparse.ArgumentParser()
@@ -610,13 +551,13 @@ def main():
     mode = args.mode
 
     print(f"\n{'='*55}")
-    print(f"🚀 ITviec scraper | mode={mode}")
+    print(f" ITviec scraper | mode={mode}")
     print(f"{'='*55}")
 
     driver = init_driver()
 
     def _exit(sig, frame):
-        print("\n⛔ Ctrl+C — đóng driver...")
+        print("\n Ctrl+C — đóng driver...")
         try:
             driver.service.process.kill()
         except Exception:
@@ -648,7 +589,7 @@ def main():
                 time.sleep(3)
 
         print(f"\n{'='*55}")
-        print(f"🎉 HOÀN THÀNH | mode={mode} | {total} job → PostgreSQL")
+        print(f" HOÀN THÀNH | mode={mode} | {total} job → PostgreSQL")
         print(f"{'='*55}")
         for cat, kw_counts in summary.items():
             cat_total = sum(kw_counts.values())

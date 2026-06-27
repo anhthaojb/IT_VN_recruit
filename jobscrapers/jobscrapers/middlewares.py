@@ -1,7 +1,8 @@
 from scrapy import signals
 from itemadapter import ItemAdapter
 import random
-
+import time
+from scrapy.downloadermiddlewares.retry import RetryMiddleware
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -40,33 +41,13 @@ class JobscrapersSpiderMiddleware:
     def spider_opened(self, spider):
         spider.logger.info("Spider opened: %s" % spider.name)
 
-import time
-from scrapy.downloadermiddlewares.retry import RetryMiddleware
 
 class BackoffRetryMiddleware(RetryMiddleware):
     def process_response(self, request, response, spider):
         if response.status in [429, 403]:
             retries = request.meta.get('retry_times', 0)
-            wait = min(60, 5 * (2 ** retries))  # 5s → 10s → 20s → 40s → 60s
+            wait = min(60, 5 * (2 ** retries))  
             spider.logger.info(f"[{response.status}] Backoff {wait}s — {request.url}")
             time.sleep(wait)
             return self._retry(request, f"{response.status} rate limit", spider) or response
         return super().process_response(request, response, spider)
-class JobscrapersDownloaderMiddleware:
-    @classmethod
-    def from_crawler(cls, crawler):
-        s = cls()
-        crawler.signals.connect(s.spider_opened, signal=signals.spider_opened)
-        return s
-
-    def process_request(self, request, spider):
-        return None
-
-    def process_response(self, request, response, spider):
-        return response
-
-    def process_exception(self, request, exception, spider):
-        pass
-
-    def spider_opened(self, spider):
-        spider.logger.info("Spider opened: %s" % spider.name)

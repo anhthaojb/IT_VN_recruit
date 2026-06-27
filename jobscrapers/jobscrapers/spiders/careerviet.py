@@ -18,13 +18,11 @@ class CareervietSpider(scrapy.Spider):
 
     @staticmethod
     def _is_old(posted_text: str) -> bool:
-        """
-        Careerviet format: "05-04-2026" hoặc "05/04/2026"
-        """
+
         if not posted_text:
             return False
         posted_text = posted_text.strip()
-        # Match cả dd/mm/yyyy lẫn dd-mm-yyyy
+
         m = re.search(r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})", posted_text)
         if m:
             try:
@@ -35,10 +33,6 @@ class CareervietSpider(scrapy.Spider):
             except ValueError:
                 pass
         return False
-
-    # ------------------------------------------------------------------
-    # parse — danh sách job theo trang
-    # ------------------------------------------------------------------
 
     def parse(self, response):
         if self.stopped:
@@ -73,7 +67,6 @@ class CareervietSpider(scrapy.Spider):
                     cb_kwargs={"job_posted_at": posted_raw},
                 )
 
-        # Next page — tăng số trang từ URL hiện tại
         if not self.stopped:
             current_url = response.url
             match = re.search(r"trang-(\d+)", current_url)
@@ -83,10 +76,6 @@ class CareervietSpider(scrapy.Spider):
                 f"cntt-phan-mem-c1-trang-{page_num + 1}-vi.html"
             )
             yield scrapy.Request(next_url, callback=self.parse)
-
-    # ------------------------------------------------------------------
-    # parse_job_page — chi tiết job
-    # ------------------------------------------------------------------
 
     def parse_job_page(self, response, job_posted_at=""):
         def xpath(query):
@@ -115,8 +104,8 @@ class CareervietSpider(scrapy.Spider):
         item["level"]            = xpath(
             '//li[.//strong[contains(.,"Cấp bậc")]]/p/text()'
         )
-        item["company_title"]    = None  # điền ở parse_company_info
-        item["company_size"]     = None  # điền ở parse_company_info
+        item["company_title"]    = None  
+        item["company_size"]     = None  
         item["company_industry"] = xpath(
             '//li[.//strong[contains(.,"Ngành nghề")]]/p//text()'
         )
@@ -146,10 +135,6 @@ class CareervietSpider(scrapy.Spider):
             )
         else:
             yield item
-
-    # ------------------------------------------------------------------
-    # parse_company_info — thông tin công ty
-    # ------------------------------------------------------------------
 
     def parse_company_info(self, response):
         item = response.meta["job_item"]

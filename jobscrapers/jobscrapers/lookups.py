@@ -1,10 +1,5 @@
-# lookups.py
-# ==============================================================================
-# BẢNG TRA CỨU TĨNH — khởi tạo 1 lần lúc import
-# ==============================================================================
 
 import re
-
 PROVINCE_CANONICAL: dict[str, str] = {
 
     # ── TP. Hồ Chí Minh ──────────────────────────────────────────────────────
@@ -213,7 +208,6 @@ FOREIGN_KW: list[str] = [
     "mỹ", "úc", "anh",
 ]
 
-# Ví dụ:
 #   1 USD  × 25000 = 25.000.000 đồng = 25.000 nghìn đồng  → rate = 25000
 #   1 triệu VND × 1000 = 1.000.000 đồng = 1000 nghìn đồng → rate = 1000
 #   1 nghìn VND × 1    = 1000 đồng = 1 nghìn đồng          → rate = 1
@@ -364,7 +358,7 @@ COMPANY_TYPE_PATTERNS = [
     (r'\btrách\s+nhiệm\s+hữu\s+hạn\b|\btnhh\b',              'TNHH'),
     (r'\bcổ\s+phần\b|\bjsc\b|\bjoint[\s\-]stock\b|\bctcp\b',  'Cổ phần'),
     (r'\btập\s+đoàn\b',                                        'Tập đoàn'),
-    (r'\bhợp\s+tác\s+xã\b|\bhtx\b',                           'Hợp tác xã'),   # BUG-3 mới
+    (r'\bhợp\s+tác\s+xã\b|\bhtx\b',                           'Hợp tác xã'),   
     (r'\bdoanh\s+nghiệp\s+tư\s+nhân\b|\bdntn\b',              'Tư nhân'),
     # ── Nước ngoài ──
     (r'\bpte\.?\s*ltd\.?\b',                                   'Pte Ltd'),
@@ -377,16 +371,13 @@ COMPANY_TYPE_PATTERNS = [
     (r'\bholdings?\b',                                         'Holding'),
     # ── Loại tổ chức ──
     (r'\bngân\s+hàng\b|\bbank\b',                              'Ngân hàng'),
-    (r'\btrường\b|\bđại\s+học\b|\bhọc\s+viện\b|\bviện\b',     'Trường/Viện'),   # BUG-3 mới
-    (r'\btrung\s+tâm\b',                                       'Trung tâm'),     # BUG-3 mới
+    (r'\btrường\b|\bđại\s+học\b|\bhọc\s+viện\b|\bviện\b',     'Trường/Viện'),   
+    (r'\btrung\s+tâm\b',                                       'Trung tâm'),     
     (r'\bchi\s+nhánh\b',                                       'Chi nhánh'),
     # ── Agency/Confidential ──
-    (r"client\b|confidential|employer\s+brand|ẩn\s+danh",     'Confidential'),  # BUG-3 mới
+    (r"client\b|confidential|employer\s+brand|ẩn\s+danh",     'Confidential'), 
 ]
  
-
-
-# FIX: COMPANY_TYPE_STRIP giữ nguyên (dùng riêng trong parse_company_title bằng _COMPANY_NOISE)
 COMPANY_TYPE_STRIP = re.compile(
     r"(công ty\s*)?(trách nhiệm hữu hạn|tnhh|cổ phần|\bcp\b|hợp danh|\bhd\b"
     r"|doanh nghiệp tư nhân|dntn|tập đoàn|\bcorp\.?\b|\bcorporation\b"
@@ -1173,19 +1164,15 @@ ITVIEC_WORK_MODE_MAP: dict[str, str] = {
 
 ITVIEC_VALID_OUTPUTS:  frozenset[str] = frozenset(ITVIEC_WORK_MODE_MAP.values())
 ITVIEC_WORK_MODE_INPUTS: frozenset[str] = frozenset(ITVIEC_WORK_MODE_MAP.keys())
-# ==============================================================================
-# COMPILED TITLE MATCHERS — build once at import time
-# ==============================================================================
-import re as _re
 
-def _compile_title_map(title_map: dict) -> list[tuple[str, list[_re.Pattern]]]:
+def _compile_title_map(title_map: dict) -> list[tuple[str, list[re.Pattern]]]:
     result = []
     for std_title, kws in title_map.items():
         patterns = []
         for k in sorted(kws, key=len, reverse=True):
-            pat = _re.compile(
-                r"(?<![a-z0-9])" + _re.escape(k) + r"(?![a-z0-9])",
-                _re.IGNORECASE
+            pat = re.compile(
+                r"(?<![a-z0-9])" + re.escape(k) + r"(?![a-z0-9])",
+                re.IGNORECASE
             )
             patterns.append(pat)
         result.append((std_title, patterns))
@@ -1193,9 +1180,9 @@ def _compile_title_map(title_map: dict) -> list[tuple[str, list[_re.Pattern]]]:
 COMPILED_JOB_TITLE_MAP    = _compile_title_map(JOB_TITLE_MAP)
 COMPILED_NON_IT_TITLE_MAP = [
     (en_title, [
-        _re.compile(
-            r"(?<![a-z0-9])" + _re.escape(k) + r"(?![a-z0-9])",
-            _re.IGNORECASE
+        re.compile(
+            r"(?<![a-z0-9])" + re.escape(k) + r"(?![a-z0-9])",
+            re.IGNORECASE
         )
         for k in sorted(kws, key=len, reverse=True)
     ])

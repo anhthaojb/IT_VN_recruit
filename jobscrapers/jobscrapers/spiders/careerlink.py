@@ -35,10 +35,6 @@ class CareerlinkSpider(scrapy.Spider):
                 pass
         return False
 
-    # ------------------------------------------------------------------
-    # parse — danh sách job
-    # ------------------------------------------------------------------
-
     def parse(self, response):
         if self.stopped:
             return
@@ -56,10 +52,10 @@ class CareerlinkSpider(scrapy.Spider):
                 yield response.follow(
                     job_url,
                     callback=self.parse_job_page,
-                    errback=self.handle_error,  # ← thêm
+                    errback=self.handle_error,  
                 )
 
-        # Daily: chỉ crawl tối đa 3 trang đầu
+     
         if not self.stopped:
             next_href = response.css(".page-item.active + .page-item a::attr(href)").get()
             if next_href and (self._get_mode() == "full" or self.page_count < 3):
@@ -71,9 +67,9 @@ class CareerlinkSpider(scrapy.Spider):
                 yield scrapy.Request(
     url=next_url,
     callback=self.parse,
-    errback=self.handle_error,  # ← thêm
+    errback=self.handle_error,  
 )
-    # Thêm method mới vào spider
+   
     def handle_error(self, failure):
         from scrapy.spidermiddlewares.httperror import HttpError
         from twisted.internet.error import TCPTimedOutError, ConnectionRefusedError
@@ -89,9 +85,7 @@ class CareerlinkSpider(scrapy.Spider):
         else:
             self.logger.error(f"[careerlink] Lỗi không xác định: {failure}")
 
-    # ------------------------------------------------------------------
-    # parse_job_page — chi tiết job
-    # ------------------------------------------------------------------
+
 
     def parse_job_page(self, response):
         def xpath(query):
@@ -100,7 +94,7 @@ class CareerlinkSpider(scrapy.Spider):
         def xpath_all(query):
             return " ".join(response.xpath(query).getall()).strip()
 
-        # Lấy ngày đăng từ detail page
+
         posted_at_nodes = response.xpath(
             '//div[contains(@class,"date-from")]//span[@class="d-flex"]/text()[normalize-space()]'
         ).getall()
