@@ -13,8 +13,7 @@ import_linkedin_jsonl.py
 l.py
 test.ipynb
 *.ipynb
-*.svg
-*.sql
+*.svgư
 company.py
 congbott.py
 daunet.py
