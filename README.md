@@ -18,7 +18,7 @@ The system transforms raw job postings from multiple recruitment platforms into 
 
 ---
 
-## 📦 Data Scope
+## 📦 2. Data Scope
 
 ### Timeframe
 
@@ -44,7 +44,7 @@ The system transforms raw job postings from multiple recruitment platforms into 
 
 ---
 
-## ⚠️ Core Technical Challenges
+## ⚠️ 3. Core Technical Challenges
 
 The project focuses heavily on solving real-world data engineering problems caused by noisy and unstructured recruitment data.
 
@@ -52,20 +52,9 @@ The project focuses heavily on solving real-world data engineering problems caus
 
 #### 1. Highly Unstructured Text Data
 
-Critical fields such as:
+Critical fields such as salary, experience, location, company name, skills, and education were stored as inconsistent free-text formats across platforms.
 
-* salary
-* experience
-* location
-* company name
-* skills
-* education
-
-were stored as inconsistent free-text formats across platforms.
-
-Example:
-
-```text id="7b6l1d"
+```
 "15 - 20 triệu"
 "Up to $2000"
 "Không yêu cầu kinh nghiệm"
@@ -73,274 +62,215 @@ Example:
 "CTCP ABC Việt Nam"
 ```
 
----
-
 #### 2. Company Name Deduplication
 
-Company names appeared in thousands of inconsistent formats:
-
-* legal prefixes
-* abbreviations
-* English/Vietnamese variants
-* spelling inconsistencies
-
-The challenge was not just exact matching, but entity resolution at scale.
-
----
+Company names appeared in thousands of inconsistent formats — legal prefixes, abbreviations, English/Vietnamese variants, and spelling inconsistencies. The challenge was entity resolution at scale, not just exact matching.
 
 #### 3. Multi-Location Recruitment Posts
 
-One job posting could target multiple provinces simultaneously, requiring:
-
-* location normalization
-* geographic mapping
-* row fan-out logic
-
-to preserve analytical accuracy.
-
----
+One job posting could target multiple provinces simultaneously, requiring location normalization, geographic mapping, and row fan-out logic to preserve analytical accuracy.
 
 #### 4. Large-Scale ETL Reliability
 
-The pipeline needed to support:
-
-* incremental daily processing
-* full reprocessing
-* automated orchestration
-* error tracking
-* warehouse synchronization
-
-while maintaining low parsing failure rates.
+The pipeline needed to support incremental daily processing, full reprocessing, automated orchestration, error tracking, and warehouse synchronization — while maintaining low parsing failure rates.
 
 ---
 
-# 🛠️ 2. Tech Stack & Tools
+## 🛠️ 4. Tech Stack & Tools
 
-| Layer             | Technologies                          |
-| ----------------- | ------------------------------------- |
-| Crawling          | Scrapy, Selenium                      |
-| ETL               | Python, Pandas, Regex, RapidFuzz      |
-| Search & Matching | Typesense (Docker)                    |
-| Database          | MySQL                                 |
-| Data Warehouse    | Star Schema + Stored Procedures       |
-| Visualization     | Power BI                              |
-| Orchestration     | Windows Task Scheduler + Batch Script |
+| Layer | Technologies |
+| --- | --- |
+| Crawling | Scrapy, Scrapy-Playwright, Selenium |
+| ETL | Python, Pandas, Regex, RapidFuzz |
+| AI Parsing | Groq API (llama-3.3-70b-versatile) |
+| Database | PostgreSQL |
+| Data Warehouse | Star Schema + Stored Procedures |
+| Visualization | Power BI |
+| Orchestration | Windows Task Scheduler + Batch Script |
 
 ---
 
-# ⚙️ 3. Data Pipeline & ETL Architecture
+## ⚙️ 5. Setup & Installation
 
-## 🔄 End-to-End Pipeline
+> **Note:** This pipeline is designed and tested on **Windows only**.
 
-```text id="xq0q2h"
-Scrapy / Selenium Crawlers
-            ↓
-      Raw MySQL Tables
-            ↓
-      ETL (transform.py)
-            ↓
- Data Cleaning & Parsing
-            ↓
- Company Deduplication
-            ↓
- Typesense Matching Engine
-            ↓
-     fact_jobs_etl
-            ↓
- Stored Procedure ETL
-            ↓
- Star Schema Warehouse
-            ↓
-     Power BI Dashboards
+### Prerequisites
+
+| Requirement | Version |
+| --- | --- |
+| Python | 3.10+ |
+| PostgreSQL | 14+ |
+| Google Chrome | Latest |
+
+### Step 1 — Clone Repository
+
+```bash
+git clone https://github.com/anhthaojb/IT_VN_recruit.git
+cd IT_VN_recruit
 ```
 
+### Step 2 — Create Virtual Environment
+
+```bash
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Then install Playwright browsers:
+
+```bash
+playwright install chromium
+```
+
+### Step 3 — Configure Environment Variables
+
+Create a `.env` file in the root directory:
+
+```bash
+copy jobscrapers\.env.example jobscrapers\.env
+```
+
+Fill in your credentials:
+
+```env
+# LinkedIn crawler credentials
+LINKEDIN_USERNAME=your_email@gmail.com
+LINKEDIN_PASSWORD=your_password
+
+# ITviec crawler credentials
+ITVIEC_EMAIL=your_email@gmail.com
+ITVIEC_PASSWORD=your_password
+
+# Groq API — get a free key at https://console.groq.com
+GROQ_API_KEY=gsk_...
+
+# PostgreSQL connection
+DATABASE_URL=postgresql://postgres:your_password@localhost:5432/recruitment_dw
+DB_PASSWORD=your_password
+```
+
+### Step 4 — Set Up PostgreSQL Database
+
+Create the database, then run the schema scripts to initialize all tables and stored procedures:
+
+```bash
+# Create database (run once)
+psql -U postgres -c "CREATE DATABASE recruitment_dw;"
+
+# Apply schema (tables + stored procedures)
+psql -U postgres -d recruitment_dw -f sql/schema.sql
+psql -U postgres -d recruitment_dw -f sql/sp_etl_load_dw.sql
+```
+
+Or open the files in **pgAdmin** and execute them directly:
+- `sql/schema.sql` — tạo toàn bộ bảng và index
+- `sql/sp_etl_load_dw.sql` — tạo stored procedure ETL load vào Data Warehouse
+
+### Step 5 — Run the Pipeline
+
+**Daily mode** — incremental crawl và ETL:
+
+```bash
+run.bat daily
+```
+
+**Full mode** — recrawl toàn bộ:
+
+```bash
+run.bat full
+```
+
+**ETL only** — transform và load, không crawl:
+
+```bash
+python jobscrapers/transform.py
+```
+
+### Step 6 — (Optional) Automate with Windows Task Scheduler
+
+1. Open **Task Scheduler** → *Create Basic Task*
+2. Set trigger: **Daily** at your preferred time (e.g. 2:00 AM)
+3. Set action: **Start a program**
+   * Program: `C:\path\to\IT_VN_recruit\run.bat`
+   * Arguments: `daily`
+   * Start in: `C:\path\to\IT_VN_recruit`
+
 ---
 
-## 🕸️ Data Collection Layer
+## 🔄 6. Data Pipeline & ETL Architecture
 
-### Crawling Architecture
+### End-to-End Pipeline
 
-The system uses a hybrid large-scale crawling architecture combining:
-
-* **Scrapy** for high-performance concurrent crawling on static websites
-* **Selenium** and **Playwright** for JavaScript-rendered platforms and dynamic interactions
-* **Direct API calls** for platforms exposing hidden network endpoints, improving crawl speed and reducing browser overhead
-
-This hybrid approach allowed the pipeline to balance:
-
-* scalability
-* stability
-* anti-bot handling
-* dynamic rendering support
-* collection speed
-
-### Collection Strategy
-
-Different platforms required different extraction approaches:
-
-| Method       | Use Case                                                     |
-| ------------ | ------------------------------------------------------------ |
-| Scrapy       | Static HTML job boards                                       |
-| Selenium     | Dynamic pages requiring browser automation                   |
-| Playwright   | Heavy JavaScript rendering, async loading, anti-bot handling |
-| API Requests | Hidden/internal APIs for structured job data                 |
-
-### Extracted Data
-
-Each job posting includes:
-
-* job title
-* company
-* salary
-* experience
-* location
-* skills
-* education
-* work mode
-* job description
-* metadata timestamps
-
-for a total of **24 raw attributes per posting**.
-
----
-
-## ⚡ Crawling & Pipeline Engineering
-
-The crawling pipeline was designed to support:
-
-* automated daily execution
-* concurrent spider processing
-* incremental updates
-* full reindex workflows
-* failure recovery & logging
+```
+Scrapy / Scrapy-Playwright / Selenium Crawlers
+                    ↓
+           Raw PostgreSQL Tables
+                    ↓
+           ETL (transform.py)
+                    ↓
+      Data Cleaning & Parsing
+                    ↓
+      Company Deduplication
+                    ↓
+         Groq AI JD Parsing
+                    ↓
+          fact_jobs_etl
+                    ↓
+      Stored Procedure ETL
+                    ↓
+      Star Schema Warehouse
+                    ↓
+       Power BI Dashboards
+```
 
 ### Pipeline Modes
 
-```text id="d5k5bm"
+```
 MODE=daily  → crawl & process new data only
-MODE=full   → full recrawl + Typesense reindex
+MODE=full   → full recrawl + full reprocess
 ```
 
-### Orchestration Flow
+### Crawling Architecture
 
-```text id="mqvxt5"
-Playwright / Selenium / API / Scrapy
-                    ↓
-             Raw MySQL Tables
-                    ↓
-            ETL Transformation
-                    ↓
-        Company Matching Engine
-                    ↓
-           Analytical Warehouse
-                    ↓
-            Power BI Dashboards
-```
+The system uses a hybrid crawling approach:
 
-### Key Engineering Challenges
+| Method | Use Case |
+| --- | --- |
+| Scrapy | Static HTML job boards |
+| Scrapy-Playwright | Heavy JS rendering, async loading, anti-bot handling |
+| Selenium | Platforms requiring browser automation and login |
+| API Requests | Hidden/internal APIs for structured job data |
 
-#### Dynamic Rendering
+Each job posting includes 24 raw attributes: job title, company, salary, experience, location, skills, education, work mode, job description, and metadata timestamps.
 
-Some platforms relied heavily on client-side rendering and asynchronous requests.
-Playwright was used to:
+### ETL & Data Transformation
 
-* wait for dynamic components
-* intercept network requests
-* simulate real browser behavior
-* reduce crawler blocking issues
+| Component | Description |
+| --- | --- |
+| Salary Parsing | Normalizes VND/USD ranges, shorthand units (k, triệu, M), negotiable |
+| Experience Extraction | Regex + fallback logic for years, ranges, fresher detection |
+| Company Deduplication | Canonical normalization + RapidFuzz fuzzy matching |
+| AI JD Parsing | Groq API extracts skills and requirements from unstructured descriptions |
+| Geographic Fan-Out | 1 multi-location posting → multiple analytical rows |
 
-#### API Reverse Engineering
+### ETL Output Tables
 
-For several platforms, the crawler extracted data directly from internal APIs by analyzing browser network traffic, allowing:
+| Table | Purpose |
+| --- | --- |
+| `fact_jobs_etl` | Cleaned analytical staging table |
+| `fact_etl_log` | Pipeline execution logs |
+| `fact_etl_error` | Parsing errors for debugging |
 
-* faster extraction
-* cleaner structured responses
-* lower infrastructure overhead compared to browser automation
-
-#### Reliability & Automation
-
-The pipeline included:
-
-* retry handling
-* health checks
-* scheduled execution
-* ETL logging
-* parsing error tracking
-
-to ensure stable long-term operation.
+**Result:** Processed 48K+ rows with parsing error rate below 0.02%.
 
 ---
 
-## 🔧 ETL & Data Transformation
+## 🗄️ 7. Data Warehouse Design
 
-The ETL layer is the core component of the project.
+### Star Schema Architecture
 
-### Salary Parsing Engine
-
-Standardized salary formats across:
-
-* VND / USD
-* ranges
-* negotiable salaries
-* shorthand units (k, triệu, M)
-
-### Experience Extraction
-
-Used regex + NLP-style fallback logic:
-
-* exact years
-* min/max ranges
-* fresher detection
-* fallback extraction from descriptions
-
-### Company Deduplication
-
-Implemented:
-
-* canonical normalization
-* fuzzy matching
-* bidirectional similarity scoring
-* union-find grouping
-
-using:
-
-* RapidFuzz
-* Typesense search engine
-
-### Geographic Fan-Out
-
-Multi-location postings were transformed into:
-
-```text id="1z7f8s"
-1 posting → multiple analytical rows
 ```
-
-allowing accurate regional analysis.
-
----
-
-## 📊 ETL Reliability
-
-### Output Tables
-
-| Table            | Purpose                           |
-| ---------------- | --------------------------------- |
-| `fact_jobs_etl`  | Cleaned analytical staging table  |
-| `fact_etl_log`   | Pipeline execution logs           |
-| `fact_etl_error` | Detailed parsing/debugging errors |
-
-### Result
-
-* Processed **48K+ rows**
-* Parsing error rate below **0.02%**
-
----
-
-# 🗄️ 4. Data Warehouse Design
-
-## ⭐ Star Schema Architecture
-
-```text id="xwtv81"
 Dim_Company
 Dim_Location
 Dim_Industry
@@ -356,96 +286,46 @@ bridge_jobrequire
 Dim_Require
 ```
 
----
-
-## Data Modeling
-
-The warehouse was designed for:
-
-* salary analytics
-* skill demand analysis
-* role segmentation
-* geographic intelligence
-* hiring trend analysis
-
-### Fact Table
-
-`Fact_JobPostings` stores:
-
-* salary metrics
-* experience ranges
-* posting dates
-* normalized classifications
-* dimensional foreign keys
-
-### Requirement Modeling
-
-Skills and certifications were extracted into:
-
-* `Dim_Require`
-* `bridge_jobrequire`
-
-enabling many-to-many analytical relationships.
+`Fact_JobPostings` stores salary metrics, experience ranges, posting dates, normalized classifications, and dimensional foreign keys. Skills and certifications are modeled in `Dim_Require` + `bridge_jobrequire` for many-to-many analytical relationships.
 
 ---
 
-# 📊 5. Business Intelligence & Market Insights
+## 📊 8. Business Intelligence & Market Insights
 
-## 🔹 Layer 1: Recruitment Market Overview
+### Layer 1: Recruitment Market Overview
 
 ![Overview Dashboard](visuals/overview.png)
-
-### Key Findings
 
 * Hanoi and Ho Chi Minh City contributed over **83% of total hiring demand**
 * Recruitment demand peaked during **Q4/2025**
 * Technology, Finance, and Manufacturing showed comparable hiring scale
 
-### Insights
-
-The labor market remains highly centralized geographically, while digital transformation demand is expanding beyond traditional tech companies into finance and manufacturing sectors.
-
----
-
-## 🔹 Layer 2: Skill Demand & Technology Landscape
+### Layer 2: Skill Demand & Technology Landscape
 
 ![Skill Dashboard](visuals/skill.png)
-
-### Key Findings
 
 * SQL appeared more frequently than Python across Data-related roles
 * Communication and English were among the most requested skills
 * Docker and CI/CD increasingly appeared in Data Engineering positions
 
-### Insights
-
-The market increasingly values hybrid professionals capable of combining technical implementation with communication and business understanding.
-
----
-
-## 🔹 Layer 3: Salary & Career Analytics
+### Layer 3: Salary & Career Analytics
 
 ![Salary Dashboard](visuals/role.png)
-
-### Key Findings
 
 * Data Engineer roles had the highest entry salary
 * Senior Data Analyst salaries often exceeded Data Scientist salaries
 * Salary growth accelerated significantly after 3–5 years of experience
 
-### Insights
-
-Vietnam’s Data ecosystem still lacks role standardization. Many “Senior Data Analyst” positions effectively function as analytics leadership roles.
-
 ---
 
-# 🚀 6. Key Engineering Achievements
+## 🚀 9. Key Engineering Achievements
 
 ### Data Engineering
 
 * Built a production-style ETL pipeline for highly unstructured recruitment data
 * Automated daily crawling, transformation, and warehouse loading
-* Implemented scalable company entity resolution using fuzzy search
+* Implemented company entity resolution using RapidFuzz fuzzy matching at scale
+* Integrated Groq AI for parsing unstructured job descriptions
 
 ### Data Warehouse
 
@@ -454,32 +334,53 @@ Vietnam’s Data ecosystem still lacks role standardization. Many “Senior Data
 
 ### Analytics
 
-* Delivered market intelligence dashboards for:
-
-  * salary trends
-  * hiring demand
-  * skill demand
-  * geographic analysis
-  * Data role benchmarking
+* Delivered market intelligence dashboards covering salary trends, hiring demand, skill demand, geographic analysis, and Data role benchmarking
 
 ---
 
-# 📂 7. Project Structure
+## 📂 10. Project Structure
 
-```bash id="34c84p"
-jobscrapers/
+```
+IT_VN_recruit/
 │
-├── pipeline.bat
-├── run_spiders.py
+├── run.bat                    # Main orchestration script
+├── run_spiders.py             # Spider runner
+├── scrapy.cfg
+├── requirements.txt
 ├── company.csv
 │
-└── jobscrapers/
-    ├── transform.py
-    ├── typesense.py
-    ├── lookups.py
-    │
-    └── spiders/
-        ├── linkedin_selenium.py
-        ├── itviec_selenium.py
-        └── ...
+├── jobscrapers/               # Scrapy project
+│   ├── __init__.py
+│   ├── transform.py           # ETL core
+│   ├── dedup.py               # Deduplication logic
+│   ├── items.py
+│   ├── lookups.py             # Normalization dictionaries
+│   ├── middlewares.py
+│   ├── pipelines.py
+│   ├── settings.py
+│   ├── .env.example           # Environment variable template
+│   │
+│   └── spiders/
+│       ├── careerlink.py
+│       ├── careersviet.py
+│       ├── itviec_selenium.py
+│       ├── joboko.py
+│       ├── jobsgo.py
+│       ├── linkedin_selenium.py
+│       ├── timviec365.py
+│       ├── topcv.py
+│       ├── vieclam24h.py
+│       └── vietnamwork.py
+│
+├── sql/
+│   ├── schema.sql             # Database schema (tables, indexes)
+│   └── sp_etl_load_dw.sql    # Stored procedure ETL → Data Warehouse
+│
+└── visuals/
+    ├── dataful.png
+    ├── datastructure.png
+    ├── detail.png
+    ├── overview.png
+    ├── role.png
+    └── skill.png
 ```
