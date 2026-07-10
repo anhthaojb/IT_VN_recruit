@@ -16,8 +16,8 @@ from jobscrapers.pipelines import get_db_connection, _clean_nbsp
 logger = logging.getLogger(__name__)
 
 # MODEL = "llama-3.3-70b-versatile"
-# MODEL = "openai/gpt-oss-120b"   
-MODEL = "qwen/qwen3.6-27b"  
+MODEL = "openai/gpt-oss-120b"   
+# MODEL = "qwen/qwen3.6-27b"  
 MAX_RETRIES     = 3
 RETRY_DELAY     = 2
 MAX_RAW_CHARS   = 6000
@@ -89,7 +89,6 @@ def _call_groq(raw_text: str) -> dict:
             _rate_limit_wait()
             response = _get_client().chat.completions.create(
                 model=MODEL,
-                response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user",   "content": raw_text},
@@ -145,8 +144,8 @@ def main():
           OR compensation IS NULL OR compensation = ''
           OR experience IS NULL OR experience = ''
       )
-    ORDER BY scraped_at DESC
-    LIMIT 30;
+    ORDER BY scraped_at ASC
+    LIMIT 50;
     """)
 
 
