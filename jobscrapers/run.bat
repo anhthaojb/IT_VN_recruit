@@ -4,8 +4,7 @@ chcp 65001 >nul
 
 set ROOT_DIR=D:\ITTA\jobscrapers
 cd /d "%ROOT_DIR%"
-
-
+a
 set PYTHON=D:\ITTA\venv\Scripts\python.exe
 
 
@@ -16,6 +15,8 @@ set PYTHONIOENCODING=utf-8
 
 
 set DATABASE_URL=postgresql://postgres:123456@localhost:5432/recruitment_dw
+
+set PGPASSWORD=123456
 
 
 set PATH=%PATH%;C:\Program Files\PostgreSQL\18\bin
@@ -144,11 +145,6 @@ if /I "%MODE%"=="daily" (
     for /f "usebackq tokens=*" %%R in (
     `psql -U postgres -d recruitment_dw -t -A -c "SELECT MAX(etl_run_id) FROM fact_jobs_etl" ^| powershell -Command "$input | ForEach-Object { $_.Trim() }"`
 ) do set LATEST_RUN_ID=%%R
-
-    :: FIX: truoc day neu buoc lay LATEST_RUN_ID that bai (psql loi, tra ve
-    :: rong...), dedup.py van chay voi --run-id rong, khong tim thay ban ghi
-    :: nao, thoat ma 0, va pipeline bao "thanh cong" du khong dedup gi ca.
-    :: Gio coi truong hop nay la loi cung, khong cho chay dedup "gia".
     if "!LATEST_RUN_ID!"=="" (
         call :log "[5/5] FAIL - Khong lay duoc LATEST_RUN_ID, bo qua Dedup"
         set ERRORS=1

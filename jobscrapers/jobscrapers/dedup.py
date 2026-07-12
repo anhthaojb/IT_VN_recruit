@@ -7,6 +7,11 @@ import sqlalchemy
 import pandas as pd
 from rapidfuzz import fuzz as _rfuzz
 
+try:
+    from lookups import SKILL_MAP
+except ImportError:
+    from jobscrapers.lookups import SKILL_MAP
+
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql+psycopg2://postgres:123456@localhost:5432/recruitment_dw"
@@ -16,15 +21,21 @@ FUZZY_THRESHOLD = 92
 
 SOURCE_PRIORITY = {"itviec": 0, "linkedin": 1, "topcv": 2, "vietnamworks": 3}
 
-_TECH_IN_TITLE = [
-    "java", "python", "golang", "go", "nodejs", "node.js", "php",
-    "react", "angular", "vue", "flutter", "android", "ios", "swift",
-    "kotlin", ".net", "c#", "ruby", "scala", "rust",
-]
-_TECH_PATTERNS = [
-    (t, re.compile(r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])", re.IGNORECASE))
-    for t in _TECH_IN_TITLE
-]
+def _build_tech_patterns() -> list[tuple[str, re.Pattern]]:
+    patterns = []
+    for skill_name, kws in SKILL_MAP.get("hard", {}).items():
+        for kw in sorted(kws, key=len, reverse=True):
+            if re.fullmatch(r"[a-z0-9]+", kw, re.IGNORECASE):
+                pat = re.compile(
+                    r"(?<![a-z0-9])" + re.escape(kw) + r"(?![a-z0-9])",
+                    re.IGNORECASE,
+                )
+            else:
+                pat = re.compile(kw, re.IGNORECASE)
+            patterns.append((skill_name, pat))
+    return patterns
+
+_TECH_PATTERNS = _build_tech_patterns()
 
 def _title_dedup_key(title_detect, title_clean, level_clean):
     td = "" if (title_detect is None or isinstance(title_detect, float)) else str(title_detect)
@@ -39,10 +50,8 @@ def _title_dedup_key(title_detect, title_clean, level_clean):
     return key
 
 def _get_run_id_col(engine) -> str:
-    candidates = [
-        "etl_run_id", "run_id", "batch_id", "etl_batch",
-        "scraped_at", "crawled_date", "created_at", "etl_date",
-    ]
+    candidates = ["etl_run_id", "run_id", "batch_id", "etl_batch"]
+
     with engine.connect() as conn:
         result = conn.execute(sqlalchemy.text("""
             SELECT column_name FROM information_schema.columns
@@ -50,14 +59,18 @@ def _get_run_id_col(engine) -> str:
             ORDER BY ordinal_position
         """), {"tbl": FACT_TABLE})
         cols = {row[0] for row in result}
+
     for c in candidates:
         if c in cols:
             print(f" Dùng cột '{c}' làm batch key cho daily mode.")
             return c
+
     raise RuntimeError(
-        f"Không tìm thấy cột batch trong {FACT_TABLE}. "
-        f"Các cột hiện có: {cols}. "
-        f"Hãy truyền --run-id-col."
+        f"KHÔNG tìm thấy cột batch id hợp lệ trong {FACT_TABLE} "
+        f"(đã thử: {candidates}). "
+        f"Các cột hiện có: {sorted(cols)}. "
+        f"Dedup theo --mode daily cần một cột định danh batch (không phải timestamp) "
+        f"để tránh so sánh sai. Hãy tạo cột này hoặc truyền --run-id-col tường minh."
     )
 
 
@@ -70,14 +83,14 @@ def _load_corpus(engine, run_id_col: str | None = None,
             f"AND job_posted_at_clean >= NOW() - INTERVAL '{days_lookback} days'"
         )
     else:
-        time_filter = ""  
+        time_filter = ""
 
     with engine.connect() as conn:
         df = pd.read_sql(f"""
             SELECT etl_id{extra_col},
                    website_clean,
                    company_canonical_key,
-                   company_name_clean,
+                   company_title_clean,
                    job_title_detect,
                    job_title_clean,
                    level_clean,
@@ -139,7 +152,6 @@ def _find_duplicates(df_new: pd.DataFrame,
     )
     combined["etl_id"] = combined["etl_id"].astype(int)
 
-    # ── TẦNG 1: Exact match — sliding chain theo _key ───────────────────────
     exact_pool = combined[combined["job_title_detect"].notna()].copy()
     exact_pool["_key"] = exact_pool["_co"] + "||" + exact_pool["_prov"] + "||" + exact_pool["_tdk"]
 
@@ -161,20 +173,18 @@ def _find_duplicates(df_new: pd.DataFrame,
                 root_id, last_posted = eid, posted
                 continue
 
-            delta = posted - last_posted  # đã sort tăng dần nên luôn >= 0
+            delta = posted - last_posted
             if delta > max_delta:
-                # đứt chuỗi thật sự -> mở root mới
                 root_id, last_posted = eid, posted
                 continue
 
-            last_posted = posted  # <-- window trượt theo lần đăng gần nhất, KHÔNG neo vào root
+            last_posted = posted
             if eid == root_id:
                 continue
             if eid in new_ids and eid not in already_flagged:
                 already_flagged.add(eid)
                 dup_records.append({"dup_id": eid, "canon_id": root_id, "method": "exact"})
 
-    # ── TẦNG 2: Fuzzy match — sliding chain theo (co, prov) ─────────────────
     fuzzy_pool = combined[combined["job_title_detect"].isna()].copy()
 
     for (co, prov), grp in fuzzy_pool.groupby(["_co", "_prov"], sort=False):
@@ -184,7 +194,7 @@ def _find_duplicates(df_new: pd.DataFrame,
             kind="stable",
         )
 
-        chains = []  # {"root_id", "last_posted", "last_title", "level"}
+        chains = []
 
         for _, row in grp_sorted.iterrows():
             eid    = int(row["etl_id"])
@@ -192,8 +202,6 @@ def _find_duplicates(df_new: pd.DataFrame,
             title  = str(row["job_title_clean"] or "").lower()
             level  = str(row["level_clean"] or "").strip().lower()
 
-            # bỏ các chain đã hết hạn window (vì đã sort theo thời gian nên
-            # chain hết hạn ở đây sẽ hết hạn với mọi dòng sau)
             chains = [c for c in chains if (posted - c["last_posted"]) <= max_delta]
 
             best_chain, best_score = None, -1
@@ -209,7 +217,7 @@ def _find_duplicates(df_new: pd.DataFrame,
                     best_score, best_chain = score, c
 
             if best_chain is not None:
-                best_chain["last_posted"] = posted  # trượt window theo bản ghi mới nhất match được
+                best_chain["last_posted"] = posted
                 best_chain["last_title"]  = title
                 if not best_chain["level"] and level:
                     best_chain["level"] = level
@@ -227,9 +235,6 @@ def _find_duplicates(df_new: pd.DataFrame,
                 })
 
     return dup_records
-
-
-# DAILY DEDUP
 
 
 def run_daily_deduplication(engine, run_id: str,
@@ -260,7 +265,7 @@ def run_daily_deduplication(engine, run_id: str,
     df_new = df_all[df_all[run_id_col].astype(str) == str(run_id)].copy()
 
     dup_records = _find_duplicates(df_new=df_new, df_history=df_all,
-                                   days_lookback=match_window_days)  # so sánh <= match_window_days
+                                   days_lookback=match_window_days)
 
     n_exact = sum(1 for r in dup_records if r["method"] == "exact")
     n_fuzzy = sum(1 for r in dup_records if r["method"] == "fuzzy_title")
@@ -283,13 +288,13 @@ def run_daily_deduplication(engine, run_id: str,
     return len(dup_records)
 
 
-# FULL DEDUP
-
-def run_full_deduplication(engine, match_window_days: int = 90):
+def run_full_deduplication(engine, match_window_days: int = 90,
+                            run_id_col: str | None = None):
     print(f"\n[FULL] Tải toàn bộ kho (so sánh trong vòng {match_window_days} ngày)...")
-    run_id_col = _get_run_id_col(engine)
+    if run_id_col is None:
+        run_id_col = _get_run_id_col(engine)
     df_all = _load_corpus(engine, run_id_col=run_id_col,
-                          days_lookback=None)  
+                          days_lookback=None)
     if df_all.empty:
         print("   Không có dữ liệu.")
         return 0
@@ -297,7 +302,7 @@ def run_full_deduplication(engine, match_window_days: int = 90):
     print(f"   Đã tải {len(df_all):,} dòng. Chuẩn hóa...")
     df_all      = _enrich(df_all)
     dup_records = _find_duplicates(df_new=df_all, df_history=df_all,
-                                   days_lookback=match_window_days)  
+                                   days_lookback=match_window_days)
     n_exact = sum(1 for r in dup_records if r["method"] == "exact")
     n_fuzzy = sum(1 for r in dup_records if r["method"] == "fuzzy_title")
     print(f"   Phát hiện {len(dup_records):,} bản trùng "
@@ -327,7 +332,7 @@ def run_full_deduplication(engine, match_window_days: int = 90):
 
     return len(dup_records)
 
-# LOAD DATA WAREHOUSE
+
 def run_load_dw(engine, run_id: str | None = None):
     p_mode = "today" if run_id else "all"
     scope  = f"run_id={run_id}" if run_id else "all"
@@ -335,7 +340,7 @@ def run_load_dw(engine, run_id: str | None = None):
     with engine.begin() as conn:
         result = conn.execute(
             sqlalchemy.text("SELECT sp_etl_load_dw(:p_mode, :p_run_id)"),
-            {"p_mode": p_mode, "p_run_id": run_id},         
+            {"p_mode": p_mode, "p_run_id": run_id},
         )
         print(f"   [SP]: {result.scalar()}")
     print("   DW đồng bộ xong.")
@@ -383,7 +388,11 @@ def main():
         match_window = args.match_window_days if args.match_window_days is not None else (
             args.days_lookback if args.days_lookback is not None else 90
         )
-        total_dups = run_full_deduplication(engine, match_window_days=match_window)
+        total_dups = run_full_deduplication(
+            engine,
+            match_window_days=match_window,
+            run_id_col=args.run_id_col,
+        )
     if args.skip_dw:
         print("\n Bỏ qua Load DW (--skip-dw).")
     else:
