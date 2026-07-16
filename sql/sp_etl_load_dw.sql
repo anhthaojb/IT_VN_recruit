@@ -1,3 +1,6 @@
+-- FUNCTION: public.sp_etl_load_dw(character varying, character varying)
+
+-- DROP FUNCTION IF EXISTS public.sp_etl_load_dw(character varying, character varying);
 
 CREATE OR REPLACE FUNCTION public.sp_etl_load_dw(
 	p_mode character varying,
@@ -17,9 +20,7 @@ BEGIN
         SET session_replication_role = 'replica';
         TRUNCATE TABLE
             bridge_jobrequire,
-            fact_jobpostings,
-            fact_pipeline_snapshot,
-            fact_error_detail
+            fact_jobpostings
         RESTART IDENTITY;
         SET session_replication_role = 'origin';
     END IF;
@@ -270,7 +271,13 @@ WHERE NOT EXISTS (
         ngay_crawl       = EXCLUDED.ngay_crawl,
         dia_diem_id      = EXCLUDED.dia_diem_id,
         nganh_id         = EXCLUDED.nganh_id,
-        cong_ty_id       = EXCLUDED.cong_ty_id;
+        cong_ty_id       = EXCLUDED.cong_ty_id,
+        -- FIX: 3 cột này trước đây bị thiếu trong UPDATE, khiến việc re-run
+        -- ETL sau khi sửa logic phân loại job_type/nguồn/ngành không đồng bộ
+        -- được xuống fact_jobpostings.
+        hinh_thuc_id     = EXCLUDED.hinh_thuc_id,
+        nguon_id         = EXCLUDED.nguon_id,
+        danh_muc_id      = EXCLUDED.danh_muc_id;
 
     
     -- 9. DIM_REQUIRE
@@ -282,7 +289,7 @@ WHERE NOT EXISTS (
     FROM fact_jobs_etl
     CROSS JOIN LATERAL unnest(string_to_array(
         regexp_replace(hard_skills, '\s*,\s*', ',', 'g'), ',')) AS val
-    WHERE hard_skills IS NOT NULL AND is_duplicate = FALSE AND is_valid = TRUE AND TRIM(val) <> ''
+    WHERE hard_skills IS NOT NULL  AND is_valid = TRUE AND TRIM(val) <> ''
 
     UNION ALL
 
@@ -290,7 +297,7 @@ WHERE NOT EXISTS (
     FROM fact_jobs_etl
     CROSS JOIN LATERAL unnest(string_to_array(
         regexp_replace(soft_skills, '\s*,\s*', ',', 'g'), ',')) AS val
-    WHERE soft_skills IS NOT NULL AND is_duplicate = FALSE AND is_valid = TRUE AND TRIM(val) <> ''
+    WHERE soft_skills IS NOT NULL  AND is_valid = TRUE AND TRIM(val) <> ''
 
     UNION ALL
 
@@ -298,7 +305,7 @@ WHERE NOT EXISTS (
     FROM fact_jobs_etl
     CROSS JOIN LATERAL unnest(string_to_array(
         regexp_replace(certifications, '\s*,\s*', ',', 'g'), ',')) AS val
-    WHERE certifications IS NOT NULL AND is_duplicate = FALSE AND is_valid = TRUE AND TRIM(val) <> ''
+    WHERE certifications IS NOT NULL  AND is_valid = TRUE AND TRIM(val) <> ''
 
     UNION ALL
 
@@ -306,7 +313,7 @@ WHERE NOT EXISTS (
     FROM fact_jobs_etl
     CROSS JOIN LATERAL unnest(string_to_array(
         regexp_replace(languages, '\s*,\s*', ',', 'g'), ',')) AS val
-    WHERE languages IS NOT NULL AND is_duplicate = FALSE AND is_valid = TRUE AND TRIM(val) <> ''
+    WHERE languages IS NOT NULL  AND is_valid = TRUE AND TRIM(val) <> ''
 
     UNION ALL
 
@@ -314,7 +321,7 @@ WHERE NOT EXISTS (
     FROM fact_jobs_etl
     CROSS JOIN LATERAL unnest(string_to_array(
         regexp_replace(major, '\s*,\s*', ',', 'g'), ',')) AS val
-    WHERE major IS NOT NULL AND is_duplicate = FALSE AND is_valid = TRUE AND TRIM(val) <> ''
+    WHERE major IS NOT NULL  AND is_valid = TRUE AND TRIM(val) <> ''
 
     ON CONFLICT (require_type, require_value) DO NOTHING;
 
@@ -330,7 +337,7 @@ WHERE NOT EXISTS (
     CROSS JOIN LATERAL unnest(string_to_array(
         regexp_replace(src.hard_skills, '\s*,\s*', ',', 'g'), ',')) AS val
     JOIN  dim_require r ON r.require_type = 'hard_skill' AND r.require_value = TRIM(val)
-    WHERE src.hard_skills IS NOT NULL AND src.is_duplicate = FALSE AND TRIM(val) <> ''
+    WHERE src.hard_skills IS NOT NULL  AND is_valid = TRUE AND TRIM(val) <> ''
       AND (p_mode = 'all'
         OR (p_mode = 'today' AND src.etl_run_id::text = p_run_id))
 
@@ -342,7 +349,7 @@ WHERE NOT EXISTS (
     CROSS JOIN LATERAL unnest(string_to_array(
         regexp_replace(src.soft_skills, '\s*,\s*', ',', 'g'), ',')) AS val
     JOIN  dim_require r ON r.require_type = 'soft_skill' AND r.require_value = TRIM(val)
-    WHERE src.soft_skills IS NOT NULL AND src.is_duplicate = FALSE AND TRIM(val) <> ''
+    WHERE src.soft_skills IS NOT NULL  AND is_valid = TRUE AND TRIM(val) <> ''
       AND (p_mode = 'all'
         OR (p_mode = 'today' AND src.etl_run_id::text = p_run_id))
 
@@ -354,7 +361,7 @@ WHERE NOT EXISTS (
     CROSS JOIN LATERAL unnest(string_to_array(
         regexp_replace(src.certifications, '\s*,\s*', ',', 'g'), ',')) AS val
     JOIN  dim_require r ON r.require_type = 'certification' AND r.require_value = TRIM(val)
-    WHERE src.certifications IS NOT NULL AND src.is_duplicate = FALSE AND TRIM(val) <> ''
+    WHERE src.certifications IS NOT NULL  AND is_valid = TRUE AND TRIM(val) <> ''
       AND (p_mode = 'all'
         OR (p_mode = 'today' AND src.etl_run_id::text = p_run_id))
 
@@ -366,7 +373,7 @@ WHERE NOT EXISTS (
     CROSS JOIN LATERAL unnest(string_to_array(
         regexp_replace(src.languages, '\s*,\s*', ',', 'g'), ',')) AS val
     JOIN  dim_require r ON r.require_type = 'language' AND r.require_value = TRIM(val)
-    WHERE src.languages IS NOT NULL AND src.is_duplicate = FALSE AND TRIM(val) <> ''
+    WHERE src.languages IS NOT NULL  AND is_valid = TRUE AND TRIM(val) <> ''
       AND (p_mode = 'all'
         OR (p_mode = 'today' AND src.etl_run_id::text = p_run_id))
 
@@ -378,7 +385,7 @@ WHERE NOT EXISTS (
     CROSS JOIN LATERAL unnest(string_to_array(
         regexp_replace(src.major, '\s*,\s*', ',', 'g'), ',')) AS val
     JOIN  dim_require r ON r.require_type = 'major' AND r.require_value = TRIM(val)
-    WHERE src.major IS NOT NULL AND src.is_duplicate = FALSE AND TRIM(val) <> ''
+    WHERE src.major IS NOT NULL  AND is_valid = TRUE AND TRIM(val) <> ''
       AND (p_mode = 'all'
         OR (p_mode = 'today' AND src.etl_run_id::text = p_run_id))
 

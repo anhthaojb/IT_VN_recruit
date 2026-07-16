@@ -14,41 +14,103 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 from jobscrapers.pipelines import get_db_connection, _clean_nbsp
 logger = logging.getLogger(__name__)
+MAX_TITLE_CHARS = 300
+MAX_DESCRIPTION_CHARS = 5000
+MAX_REQUIREMENT_CHARS = 3000
 
 # MODEL = "llama-3.3-70b-versatile"
 MODEL = "openai/gpt-oss-120b"   
 # MODEL = "qwen/qwen3.6-27b"  
 MAX_RETRIES     = 3
 RETRY_DELAY     = 2
-MAX_RAW_CHARS   = 6000
+MAX_RAW_CHARS   = 9000
 MAX_REQ_PER_MIN = 28
 
 SYSTEM_PROMPT = """
-You are an expert data extraction assistant specialized in tech job postings.
-Your sole task is to parse the provided raw job text and organize it into a structured JSON object.
+You are a data extraction assistant specialized in technology job postings.
 
-Input text contains both what the candidate will do and what qualifications they need. Separate them cleanly.
+The input contains up to three explicitly marked sections:
 
-Return ONLY a valid JSON with this exact schema:
+<JOB_TITLE>
+The original job title.
+</JOB_TITLE>
+
+<JOB_DESCRIPTION_RAW>
+Raw job description content. It may contain responsibilities, requirements,
+benefits, salary, work mode, experience, and education mixed together.
+</JOB_DESCRIPTION_RAW>
+
+<JOB_REQUIREMENT_RAW>
+Raw candidate requirement content. It may overlap with the description
+or may be empty.
+</JOB_REQUIREMENT_RAW>
+
+Your task is to combine evidence from ALL available sections and return
+one structured JSON object.
+
+Return ONLY valid JSON using this exact schema:
+
 {
-  "job_description": "Responsibilities, core duties, and daily tasks. Plain text, remove all bullet points, separate sentences with newlines.",
-  "job_requirement": "Requirements, skills, tech stack, experience, and education needed. Plain text, remove all bullet points, separate sentences with newlines.",
-  "compensation": "Salary info if found (e.g., 'Thỏa thuận', '20-30 triệu/tháng', '1000 USD/month').",
-  "salary_type": "hourly, monthly, yearly, per_task, or negotiable.",
-  "level": "Intern, Fresher, Junior, Mid, Senior, Manager, or Director.",
-  "job_type": "Full-time, Part-time, Contract, or Freelance.",
-  "work_mode": "On-site, Remote, or Hybrid.",
-  "education_level": "Minimum degree required if mentioned.",
-  "experience": "Years of experience needed (e.g., '2+ years', '0' for intern)."
+  "job_description": "",
+  "job_requirement": "",
+  "compensation": "",
+  "salary_type": "",
+  "level": "",
+  "job_type": "",
+  "work_mode": "",
+  "education_level": "",
+  "experience": ""
 }
 
-CRITICAL: Do not write any markdown fences (like ```json), no explanations, no chat preamble. Just raw JSON. If any information is missing, use empty string "".
-5. Do not invent information not present in the source.
-6. Keep Vietnamese text in Vietnamese. Keep English text in English. Do NOT translate.
-7. Remove ALL bullet symbols (-, •, *, ▪, ·, –) — plain sentences separated by newlines only.
-8. For experience with multiple levels (intern/junior/senior), extract the most junior requirement.
-9. salary_type: /hour or per hour or /giờ → hourly; /month or /tháng → monthly; /year or /năm → yearly; per task or theo dự án → per_task; thỏa thuận or negotiable or competitive → negotiable.
-10. job_type: Never use 'Internship' as job_type — use level field for intern detection instead.
+Extraction rules:
+
+1. job_description:
+   Extract only responsibilities, duties, tasks, scope of work,
+   and what the employee will do.
+
+2. job_requirement:
+   Extract only candidate requirements, including skills, technologies,
+   experience, education, language, certifications, and personal qualifications.
+
+3. Use information from JOB_TITLE, JOB_DESCRIPTION_RAW, and
+   JOB_REQUIREMENT_RAW together.
+
+4. If the same information appears in multiple sections, merge it and remove
+   duplicate sentences.
+
+5. Do not copy requirements into job_description.
+
+6. Do not copy responsibilities into job_requirement.
+
+7. Do not invent or infer information that is not supported by the input.
+
+8. If a field is not explicitly supported by the input, return an empty string "".
+
+9. level must be one of:
+   Intern, Fresher, Junior, Mid, Senior, Manager, Director.
+
+10. job_type must be one of:
+    Full-time, Part-time, Contract, Freelance.
+
+11. work_mode must be one of:
+    On-site, Remote, Hybrid.
+
+12. salary_type must be one of:
+    hourly, monthly, yearly, per_task, negotiable.
+
+13. Keep Vietnamese text in Vietnamese and English text in English.
+    Do not translate.
+
+14. Remove bullet symbols. Return plain text with separate sentences
+    divided by newline characters.
+
+15. For experience:
+    preserve explicit ranges such as "2+ years" or "3-5 years".
+    Do not convert experience into level unless the level is explicitly stated
+    in the title or source text.
+
+16. Do not use markdown fences, explanations, or introductory text.
+    Return raw JSON only.
 """.strip()
 
 _client     = None
@@ -127,25 +189,38 @@ def _call_groq(raw_text: str) -> dict:
 
 def main():
     conn, cur = get_db_connection()
-
     cur.execute("""
-            SELECT id, job_title, company_title, job_url,
-           job_description, work_mode, job_type,
-           compensation, level
-    FROM staging_jobs
-    WHERE website = 'linkedin'
-      AND ai_processed = FALSE
-      AND job_description IS NOT NULL
-      AND job_description != ''
-      AND (
-          job_requirement IS NULL OR job_requirement = ''
-          OR level IS NULL OR level = ''
-          OR education_level IS NULL OR education_level = ''
-          OR compensation IS NULL OR compensation = ''
-          OR experience IS NULL OR experience = ''
-      )
-    ORDER BY scraped_at ASC
-    LIMIT 50;
+        SELECT
+            id,
+            job_title,
+            company_title,
+            job_url,
+            job_description,
+            job_requirement,
+            work_mode,
+            job_type,
+            compensation,
+            level,
+            experience,
+            education_level
+        FROM staging_jobs
+        WHERE website = 'linkedin'
+        AND ai_processed = FALSE
+        AND (
+                NULLIF(TRIM(job_description), '') IS NOT NULL
+            OR NULLIF(TRIM(job_requirement), '') IS NOT NULL
+        )
+        AND (
+            job_requirement IS NULL OR TRIM(job_requirement) = ''
+            OR level IS NULL OR TRIM(level) = ''
+            OR education_level IS NULL OR TRIM(education_level) = ''
+            OR compensation IS NULL OR TRIM(compensation) = ''
+            OR experience IS NULL OR TRIM(experience) = ''
+            OR work_mode IS NULL OR TRIM(work_mode) = ''
+            OR job_type IS NULL OR TRIM(job_type) = ''
+        )
+        ORDER BY scraped_at ASC, id ASC
+        LIMIT 50;
     """)
 
 
@@ -158,7 +233,24 @@ def main():
     for i, item in enumerate(items, 1):
         print(f"  [{i}/{len(items)}] {item['job_title']}")
         try:
-            full_raw_text = item["job_description"]
+            job_title_raw = (item.get("job_title") or "").strip()[:MAX_TITLE_CHARS]
+            job_description_raw = (item.get("job_description") or "").strip()[:MAX_DESCRIPTION_CHARS]
+            job_requirement_raw = (item.get("job_requirement") or "").strip()[:MAX_REQUIREMENT_CHARS]
+
+            full_raw_text = f"""
+            <JOB_TITLE>
+            {job_title_raw}
+            </JOB_TITLE>
+
+            <JOB_DESCRIPTION_RAW>
+            {job_description_raw}
+            </JOB_DESCRIPTION_RAW>
+
+            <JOB_REQUIREMENT_RAW>
+            {job_requirement_raw}
+            </JOB_REQUIREMENT_RAW>
+            """.strip()
+
             ai = _call_groq(full_raw_text)
 
             def _clean_field(field):
@@ -197,8 +289,8 @@ def main():
                 _clean_field("level"),
                 _clean_field("work_mode"),
                 _clean_field("job_type"),
-                (ai.get("experience") or "").strip(),
-                (ai.get("education_level") or "").strip(),
+                _clean_field("experience"),
+                _clean_field("education_level"),
                 item["id"],
             ))
             conn.commit()

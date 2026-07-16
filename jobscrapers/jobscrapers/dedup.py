@@ -111,26 +111,52 @@ def _load_corpus(engine, run_id_col: str | None = None,
 
 def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["_co"]   = df["company_canonical_key"].fillna("").str.lower().str.strip()
-    df["_prov"] = df["location_province"].fillna("Khác")
 
-    df["_skip_dedup"] = df["company_canonical_key"].isna()
+    company_clean = (
+        df["company_title_clean"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+
+    # Chỉ bỏ qua các công ty đã được ETL gán là Unknown
+    df["_skip_dedup"] = company_clean.eq("unknown")
+
+    df["_co"] = (
+        df["company_canonical_key"]
+        .fillna("")
+        .astype(str)
+        .str.lower()
+        .str.strip()
+    )
+
+    df["_prov"] = (
+        df["location_province"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
 
     df["_src_rank"] = df["website_clean"].map(
         lambda x: SOURCE_PRIORITY.get(str(x).lower(), 99)
     )
-    df["_info"] = (
-        df["salary_min"].notna().astype(int) +
-        df["salary_max"].notna().astype(int)
-    )
-    df["_tdk"] = df.apply(
-        lambda r: _title_dedup_key(r["job_title_detect"],
-                                   r["job_title_clean"] or "",
-                                   r["level_clean"],
-                                   ), axis=1
-    )
-    return df
 
+    df["_info"] = (
+        df["salary_min"].notna().astype(int)
+        + df["salary_max"].notna().astype(int)
+    )
+
+    df["_tdk"] = df.apply(
+        lambda r: _title_dedup_key(
+            r["job_title_detect"],
+            r["job_title_clean"] or "",
+            r["level_clean"],
+        ),
+        axis=1,
+    )
+
+    return df
 
 def _find_duplicates(df_new: pd.DataFrame,
                      df_history: pd.DataFrame,
