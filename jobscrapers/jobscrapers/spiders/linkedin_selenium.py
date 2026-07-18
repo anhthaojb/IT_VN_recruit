@@ -324,7 +324,7 @@ def parse_job(driver, keyword, category):
         print(f"    ⚠️  Detail quá ngắn ({chars} chars) — skip")
         return None
 
-    location = job_posted_at = None
+    location = job_posted_at = job_posted_at_raw = None
     tertiary = driver.find_elements(
         By.CSS_SELECTOR,
         "div.job-details-jobs-unified-top-card__tertiary-description-container "
@@ -336,6 +336,7 @@ def parse_job(driver, keyword, category):
     ]
     for token in tokens:
         if not job_posted_at and TIME_PAT.search(token):
+            job_posted_at_raw = token
             job_posted_at = _parse_posted_date(token)
         elif not location and LOC_PAT.match(token) and not TIME_PAT.search(token):
             location = token
