@@ -32,7 +32,8 @@ You are a data extraction assistant specialized in technology job postings.
 The input contains up to three explicitly marked sections:
 
 <JOB_TITLE>
-The original job title.
+The original, possibly noisy job title (may contain company name, location,
+salary, emoji, tags like "HOT", "Gấp", "Urgent", brackets, extra punctuation).
 </JOB_TITLE>
 
 <JOB_DESCRIPTION_RAW>
@@ -50,7 +51,7 @@ one structured JSON object.
 
 Return ONLY valid JSON using this exact schema:
 
-{
+{"job_title": "",
   "job_description": "",
   "job_requirement": "",
   "compensation": "",
@@ -58,11 +59,21 @@ Return ONLY valid JSON using this exact schema:
   "level": "",
   "job_type": "",
   "work_mode": "",
+  "location": "",
   "education_level": "",
-  "experience": ""
-}
+  "experience": ""}
 
 Extraction rules:
+
+0. job_title:
+   Remove noise from JOB_TITLE: company name, location, salary/compensation
+   text, emoji, decorative symbols, recruitment tags (e.g. "HOT", "Gấp",
+   "Urgent", "Tuyển gấp"), surrounding brackets/quotes, and duplicate
+   whitespace. Keep only the core job position name, in its original
+   language, without translating or rewording it.
+   If after removing noise no clear job title remains, or the title is
+   too ambiguous to isolate confidently, return "" for job_title.
+   Do not guess or reconstruct a title that is not clearly present.
 
 1. job_description:
    Extract only responsibilities, duties, tasks, scope of work,
@@ -84,7 +95,9 @@ Extraction rules:
 
 7. Do not invent or infer information that is not supported by the input.
 
-8. If a field is not explicitly supported by the input, return an empty string "".
+8. If a field is not explicitly supported by the input, return an empty
+   string "". This applies to every field, including job_title and
+   compensation — do not fabricate or estimate a value.
 
 9. level must be one of:
    Intern, Fresher, Junior, Mid, Senior, Manager, Director.
@@ -97,6 +110,7 @@ Extraction rules:
 
 12. salary_type must be one of:
     hourly, monthly, yearly, per_task, negotiable.
+12.1 location: Phải là tên một thành phố cụ thể ở Việt Nam (ví dụ: Thành phố Hồ Chí Minh, Hà Nội, Đà Nẵng,...) hoặc tên thành phố/quốc gia nước ngoài nếu làm việc tại nước ngoài (oversea). Nếu không có thông tin hoặc không xác định được, bắt buộc trả về chuỗi rỗng "". Không điền tên quận/huyện hoặc địa chỉ chi tiết vào đây.
 
 13. Keep Vietnamese text in Vietnamese and English text in English.
     Do not translate.
@@ -202,7 +216,8 @@ def main():
             compensation,
             level,
             experience,
-            education_level
+            education_level,
+            location
         FROM staging_jobs
         WHERE website = 'linkedin'
         AND ai_processed = FALSE
@@ -218,6 +233,7 @@ def main():
             OR experience IS NULL OR TRIM(experience) = ''
             OR work_mode IS NULL OR TRIM(work_mode) = ''
             OR job_type IS NULL OR TRIM(job_type) = ''
+            OR location IS NULL OR TRIM(location) = ''
         )
         ORDER BY scraped_at ASC, id ASC
         LIMIT 50;
@@ -258,7 +274,7 @@ def main():
                 if ai_val:
                     return ai_val
                 return (item.get(field) or "").strip()
-
+            job_title_clean = (ai.get("job_title") or "").strip()
 
             job_desc = (ai.get("job_description") or "").strip()
             job_req = (ai.get("job_requirement") or "").strip()
@@ -266,12 +282,14 @@ def main():
                 job_req = "Thông tin chi tiết xem tại mô tả công việc hoặc liên hệ nhà tuyển dụng."
             if not job_desc:
                 job_desc = (item.get("job_description") or "").strip()
+
             compensation_val = _clean_field("compensation")
             if not compensation_val or compensation_val.lower() in ["", "none", "null"]:
                 compensation_val = "Thỏa thuận"
 
             cur.execute("""
                 UPDATE staging_jobs SET
+                    job_title       = COALESCE(NULLIF(%s, ''), job_title),
                     job_description = %s,
                     job_requirement = %s,
                     compensation    = %s,
@@ -280,9 +298,11 @@ def main():
                     job_type        = %s,
                     experience      = %s,
                     education_level = %s,
+                    location        = %s,
                     ai_processed    = TRUE
                 WHERE id = %s
             """, (
+                _clean_nbsp(job_title_clean),
                 _clean_nbsp(job_desc),
                 _clean_nbsp(job_req),
                 compensation_val,
@@ -291,6 +311,7 @@ def main():
                 _clean_field("job_type"),
                 _clean_field("experience"),
                 _clean_field("education_level"),
+                _clean_field("location"),
                 item["id"],
             ))
             conn.commit()

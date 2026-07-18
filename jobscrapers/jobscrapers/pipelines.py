@@ -222,7 +222,6 @@ _INSERT_SQL = """
         education_level  = EXCLUDED.education_level,
         job_category     = EXCLUDED.job_category,
         job_requirement  = EXCLUDED.job_requirement,
-        job_posted_at    = EXCLUDED.job_posted_at,
         scraped_at       = EXCLUDED.scraped_at,
         is_valid         = EXCLUDED.is_valid
         -- ai_processed KHÔNG update để tránh reset về False khi scrape lại

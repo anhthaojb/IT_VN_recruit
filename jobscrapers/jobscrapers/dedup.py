@@ -100,14 +100,21 @@ def _load_corpus(engine, run_id_col: str | None = None,
                    job_posted_at_clean
             FROM {FACT_TABLE}
             WHERE is_valid = TRUE
+            AND job_posted_at_clean IS NOT NULL
             {time_filter}
         """, conn)
 
     df = df.dropna(subset=["etl_id"])
     df["etl_id"] = df["etl_id"].astype(int)
     df["job_posted_at_clean"] = pd.to_datetime(df["job_posted_at_clean"])
-    return df
 
+    n_before = len(df)
+    df = df.dropna(subset=["job_posted_at_clean"])
+    n_dropped = n_before - len(df)
+    if n_dropped:
+        print(f"    Loại {n_dropped} dòng có job_posted_at_clean không hợp lệ (NaT).")
+
+    return df
 
 def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -120,10 +127,7 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
         .str.lower()
     )
 
-    # Chỉ bỏ qua các công ty đã được ETL gán là Unknown
-    df["_skip_dedup"] = company_clean.eq("unknown")
-
-    df["_co"] = (
+    co_key = (
         df["company_canonical_key"]
         .fillna("")
         .astype(str)
@@ -131,12 +135,21 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
         .str.strip()
     )
 
-    df["_prov"] = (
+    prov_key = (
         df["location_province"]
         .fillna("")
         .astype(str)
         .str.strip()
     )
+
+    df["_skip_dedup"] = (
+        company_clean.eq("unknown")
+        | co_key.eq("")
+        | prov_key.eq("")
+    )
+
+    df["_co"]   = co_key
+    df["_prov"] = prov_key
 
     df["_src_rank"] = df["website_clean"].map(
         lambda x: SOURCE_PRIORITY.get(str(x).lower(), 99)
@@ -266,7 +279,7 @@ def _find_duplicates(df_new: pd.DataFrame,
 def run_daily_deduplication(engine, run_id: str,
                              run_id_col: str | None = None,
                              load_window_days: int = 90,
-                             match_window_days: int = 30):
+                             match_window_days: int = 45):
     if run_id_col is None:
         run_id_col = _get_run_id_col(engine)
 
@@ -314,7 +327,7 @@ def run_daily_deduplication(engine, run_id: str,
     return len(dup_records)
 
 
-def run_full_deduplication(engine, match_window_days: int = 90,
+def run_full_deduplication(engine, match_window_days: int = 45,
                             run_id_col: str | None = None):
     print(f"\n[FULL] Tải toàn bộ kho (so sánh trong vòng {match_window_days} ngày)...")
     if run_id_col is None:
@@ -399,25 +412,24 @@ def main():
     start_time = time.time()
 
     if args.mode == "daily":
-        load_window  = args.load_window_days if args.load_window_days is not None else 90
         match_window = args.match_window_days if args.match_window_days is not None else (
-            args.days_lookback if args.days_lookback is not None else 30
+            args.days_lookback if args.days_lookback is not None else 45
         )
+        load_window = args.load_window_days if args.load_window_days is not None else 90
+        if load_window < match_window:
+            print(f"    load_window_days ({load_window}) < match_window_days ({match_window}) "
+                  f"-> nâng load_window_days lên {match_window} để tránh bỏ sót.")
+            load_window = match_window
         total_dups = run_daily_deduplication(
-            engine,
-            run_id=args.run_id,
-            run_id_col=args.run_id_col,
-            load_window_days=load_window,
-            match_window_days=match_window,
+            engine, run_id=args.run_id, run_id_col=args.run_id_col,
+            load_window_days=load_window, match_window_days=match_window,
         )
     else:
         match_window = args.match_window_days if args.match_window_days is not None else (
-            args.days_lookback if args.days_lookback is not None else 90
+            args.days_lookback if args.days_lookback is not None else 45
         )
         total_dups = run_full_deduplication(
-            engine,
-            match_window_days=match_window,
-            run_id_col=args.run_id_col,
+            engine, match_window_days=match_window, run_id_col=args.run_id_col,
         )
     if args.skip_dw:
         print("\n Bỏ qua Load DW (--skip-dw).")
