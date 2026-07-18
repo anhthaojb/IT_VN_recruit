@@ -8,7 +8,7 @@ import random
 import signal
 import argparse
 import pathlib
-from datetime import datetime
+from datetime import datetime,timedelta
 from urllib.parse import quote_plus, urlparse, parse_qs, urlencode
 from dotenv import load_dotenv
 from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
@@ -156,7 +156,26 @@ def _is_old_linkedin(posted_text: str) -> bool:
         "month": n * 30, "year": n * 365,
     }.get(unit, 0)
     return age_days > DAILY_MAX_AGE_DAYS
-
+def _parse_posted_date(posted_text: str):
+    """Convert '4 days ago' / 'just now' -> ISO date string (YYYY-MM-DD)."""
+    if not posted_text:
+        return None
+    if re.search(r"just now", posted_text, re.IGNORECASE):
+        return datetime.now().date().isoformat()
+    m = re.search(
+        r"(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago",
+        posted_text, re.IGNORECASE,
+    )
+    if not m:
+        return None
+    n, unit = int(m.group(1)), m.group(2).lower()
+    delta_days = {
+        "second": 0, "minute": 0, "hour": 0,
+        "day": n, "week": n * 7,
+        "month": n * 30, "year": n * 365,
+    }.get(unit, 0)
+    posted_date = datetime.now().date() - timedelta(days=delta_days)
+    return posted_date.isoformat()
 def init_driver():
     opts = uc.ChromeOptions()
     opts.add_argument("--start-maximized")
@@ -261,9 +280,6 @@ def login(driver):
         raise Exception(f" Chưa login được — URL: {driver.current_url}")
     save_cookies(driver)
     print(f" Đăng nhập thành công — {driver.current_url}")
-
-
-
 def parse_job(driver, keyword, category):
     raw_about_job = ""
     job_title = ""
@@ -320,7 +336,7 @@ def parse_job(driver, keyword, category):
     ]
     for token in tokens:
         if not job_posted_at and TIME_PAT.search(token):
-            job_posted_at = token
+            job_posted_at = _parse_posted_date(token)
         elif not location and LOC_PAT.match(token) and not TIME_PAT.search(token):
             location = token
 
@@ -378,6 +394,7 @@ def parse_job(driver, keyword, category):
         "location"        : location,
         "job_url"         : driver.current_url,
         "job_posted_at"   : job_posted_at,
+        "_posted_at_raw"  : job_posted_at_raw,
         "job_deadline"    : None,
         "work_mode"       : work_mode,
         "job_type"        : job_type,
@@ -516,13 +533,14 @@ def scrape_keyword(driver, keyword, category, seen_urls, cur, conn, mode, tracke
             if not raw:
                 card_index += 1
                 continue
-            if mode == "daily" and _is_old_linkedin(raw.get("job_posted_at", "")):
-                print(f"    Job cũ ({raw['job_posted_at']!r}) — skip")
+            if mode == "daily" and _is_old_linkedin(raw.get("_posted_at_raw", "")):
+                print(f"    Job cũ ({raw.get('_posted_at_raw')!r}) — skip")
                 card_index += 1
                 continue
             seen_urls.add(normalized_url)
             raw["job_url"]         = normalized_url
             raw["job_requirement"] = None
+            raw.pop("_posted_at_raw", None)
 
             cur, conn = ensure_db_connection(cur, conn)
             cleaned = clean_dict(raw)
