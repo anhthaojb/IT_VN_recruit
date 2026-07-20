@@ -155,7 +155,10 @@ WHERE NOT EXISTS (
         etl_run_id, ngay_crawl, ngay_deadline,
         created_at, updated_at
     )
-    WITH deduped AS (
+    -- Nạp toàn bộ bản ghi hợp lệ vào Fact, bao gồm cả canonical và duplicate.
+    -- ROW_NUMBER ở đây chỉ loại trường hợp cùng etl_id xuất hiện lặp kỹ thuật,
+    -- không loại các bản ghi đã được đánh cờ is_duplicate = TRUE.
+    WITH source_rows AS (
         SELECT *
         FROM (
             SELECT *,
@@ -223,7 +226,7 @@ WHERE NOT EXISTS (
         CURRENT_TIMESTAMP,
         CURRENT_TIMESTAMP
 
-    FROM deduped src
+    FROM source_rows src
 
     LEFT JOIN dim_diadiem dd
            ON TRIM(src.location_province) = dd.tinh_thanh
@@ -405,4 +408,3 @@ $BODY$;
 
 ALTER FUNCTION public.sp_etl_load_dw(character varying, character varying)
     OWNER TO postgres;
-
