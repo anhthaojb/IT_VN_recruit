@@ -26,6 +26,55 @@ RETRY_DELAY     = 2
 MAX_RAW_CHARS   = 9000
 MAX_REQ_PER_MIN = 28
 
+
+_EDUCATION_EVIDENCE_RE = re.compile(
+    r"""
+    (?<![A-Za-zÀ-ỹ0-9])
+    (
+        bachelor(?:'s)?
+        |master(?:'s)?
+        |ph\.?d\.?
+        |doctorate
+        |degree
+        |university
+        |college
+        |graduate
+        |graduated
+        |b\.?s\.?
+        |b\.?a\.?
+        |m\.?s\.?
+        |m\.?a\.?
+        |đại\s*học
+        |cao\s*đẳng
+        |cử\s*nhân
+        |thạc\s*sĩ
+        |tiến\s*sĩ
+        |tốt\s*nghiệp
+        |học\s*vấn
+        |trình\s*độ
+    )
+    (?![A-Za-zÀ-ỹ0-9])
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _validate_education(ai_value: str, description: str, requirement: str) -> str:
+    """Loại education_level do AI suy diễn nếu không có bằng chứng trong input."""
+    value = (ai_value or "").strip()
+    if not value:
+        return ""
+
+    source_text = f"{description or ''}\n{requirement or ''}"
+    if not _EDUCATION_EVIDENCE_RE.search(source_text):
+        print(
+            f"    Bỏ education_level={value!r}: "
+            "không tìm thấy bằng chứng học vấn trong dữ liệu nguồn."
+        )
+        return ""
+
+    return value
+
 SYSTEM_PROMPT = """
 You are a data extraction assistant specialized in technology job postings.
 
@@ -239,6 +288,24 @@ def main():
         LIMIT 50;
     """)
 
+    # cur.execute("""
+    #     SELECT
+    #         id,
+    #         job_title,
+    #         company_title,
+    #         job_url,
+    #         job_description,
+    #         job_requirement,
+    #         work_mode,
+    #         job_type,
+    #         compensation,
+    #         level,
+    #         experience,
+    #         education_level,
+    #         location
+    #     FROM staging_jobs
+    #     WHERE id = 120300
+    # """)
 
     rows = cur.fetchall()
     cols = [d[0] for d in cur.description]
@@ -268,6 +335,12 @@ def main():
             """.strip()
 
             ai = _call_groq(full_raw_text)
+
+            education_val = _validate_education(
+                ai.get("education_level", ""),
+                job_description_raw,
+                job_requirement_raw,
+            )
 
             def _clean_field(field):
                 ai_val = (ai.get(field) or "").strip()
@@ -310,7 +383,7 @@ def main():
                 _clean_field("work_mode"),
                 _clean_field("job_type"),
                 _clean_field("experience"),
-                _clean_field("education_level"),
+                education_val,
                 _clean_field("location"),
                 item["id"],
             ))

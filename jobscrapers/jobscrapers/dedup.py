@@ -1,6 +1,5 @@
 import os
 import re
-import sys
 import time
 import argparse
 import sqlalchemy
@@ -37,17 +36,11 @@ def _build_tech_patterns() -> list[tuple[str, re.Pattern]]:
 
 _TECH_PATTERNS = _build_tech_patterns()
 
-def _title_dedup_key(title_detect, title_clean, level_clean):
-    td = "" if (title_detect is None or isinstance(title_detect, float)) else str(title_detect)
-    tc = "" if (title_clean  is None or isinstance(title_clean,  float)) else str(title_clean)
-    lv = "" if (level_clean  is None or isinstance(level_clean,  float)) else str(level_clean).strip().lower()
-    base = td.strip().lower()
-    if not base:
-        return tc.strip().lower()
-    tech = next((label for label, pat in _TECH_PATTERNS if pat.search(tc)), "")
-    key  = f"{base}::{tech}" if tech else base
-    key  = f"{key}::{lv}"   if lv   else key
-    return key
+def _title_dedup_key(title_clean):
+    """Khóa dedup dùng trực tiếp job_title_clean, chỉ trim và lowercase."""
+    if title_clean is None or isinstance(title_clean, float):
+        return ""
+    return str(title_clean).strip().lower()
 
 def _get_run_id_col(engine) -> str:
     candidates = ["etl_run_id", "run_id", "batch_id", "etl_batch"]
@@ -72,7 +65,6 @@ def _get_run_id_col(engine) -> str:
         f"Dedup theo --mode daily cần một cột định danh batch (không phải timestamp) "
         f"để tránh so sánh sai. Hãy tạo cột này hoặc truyền --run-id-col tường minh."
     )
-
 
 def _load_corpus(engine, run_id_col: str | None = None,
                  days_lookback: int | None = None):
@@ -115,7 +107,6 @@ def _load_corpus(engine, run_id_col: str | None = None,
         print(f"    Loại {n_dropped} dòng có job_posted_at_clean không hợp lệ (NaT).")
 
     return df
-
 def _enrich(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
@@ -160,17 +151,16 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
         + df["salary_max"].notna().astype(int)
     )
 
-    df["_tdk"] = df.apply(
-        lambda r: _title_dedup_key(
-            r["job_title_detect"],
-            r["job_title_clean"] or "",
-            r["level_clean"],
-        ),
-        axis=1,
+    df["_tdk"] = df["job_title_clean"].map(_title_dedup_key)
+    df["_level"] = (
+        df["level_clean"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
     )
 
     return df
-
 def _find_duplicates(df_new: pd.DataFrame,
                      df_history: pd.DataFrame,
                      days_lookback: int = 90) -> list[dict]:
@@ -191,8 +181,13 @@ def _find_duplicates(df_new: pd.DataFrame,
     )
     combined["etl_id"] = combined["etl_id"].astype(int)
 
-    exact_pool = combined[combined["job_title_detect"].notna()].copy()
-    exact_pool["_key"] = exact_pool["_co"] + "||" + exact_pool["_prov"] + "||" + exact_pool["_tdk"]
+    exact_pool = combined[combined["_tdk"].ne("")].copy()
+    exact_pool["_key"] = (
+        exact_pool["_co"]
+        + "||" + exact_pool["_prov"]
+        + "||" + exact_pool["_tdk"]
+        + "||" + exact_pool["_level"]
+    )
 
     for _key, grp in exact_pool.groupby("_key", sort=False):
         grp_sorted = grp.sort_values(
@@ -224,7 +219,10 @@ def _find_duplicates(df_new: pd.DataFrame,
                 already_flagged.add(eid)
                 dup_records.append({"dup_id": eid, "canon_id": root_id, "method": "exact"})
 
-    fuzzy_pool = combined[combined["job_title_detect"].isna()].copy()
+    fuzzy_pool = combined[
+        combined["_tdk"].ne("")
+        & ~combined["etl_id"].isin(already_flagged)
+    ].copy()
 
     for (co, prov), grp in fuzzy_pool.groupby(["_co", "_prov"], sort=False):
         grp_sorted = grp.sort_values(
@@ -238,8 +236,8 @@ def _find_duplicates(df_new: pd.DataFrame,
         for _, row in grp_sorted.iterrows():
             eid    = int(row["etl_id"])
             posted = row["job_posted_at_clean"]
-            title  = str(row["job_title_clean"] or "").lower()
-            level  = str(row["level_clean"] or "").strip().lower()
+            title  = row["_tdk"]
+            level  = row["_level"]
 
             chains = [c for c in chains if (posted - c["last_posted"]) <= max_delta]
 
@@ -249,8 +247,7 @@ def _find_duplicates(df_new: pd.DataFrame,
                     continue
                 score = max(
                     _rfuzz.token_sort_ratio(c["last_title"], title),
-                    _rfuzz.partial_ratio(c["last_title"], title),
-                    _rfuzz.partial_ratio(title, c["last_title"]),
+                    _rfuzz.token_set_ratio(c["last_title"], title),
                 )
                 if score >= FUZZY_THRESHOLD and score > best_score:
                     best_score, best_chain = score, c
@@ -370,7 +367,6 @@ def run_full_deduplication(engine, match_window_days: int = 45,
                 """), batch)
 
     return len(dup_records)
-
 
 def run_load_dw(engine, run_id: str | None = None):
     p_mode = "today" if run_id else "all"

@@ -242,30 +242,36 @@ def _clean_job_title(raw: str) -> str:
 def _detect_job_title(clean_title: str) -> str | None:
     if not clean_title:
         return None
-    text = clean_title.lower()
 
- 
+    text = clean_title.lower()
     for std_title, patterns in COMPILED_JOB_TITLE_MAP:
         for pat in patterns:
             if pat.search(text):
                 return std_title
 
-  
-    role   = next((v for k, v in ROLE_WORDS.items()  if k in text), None)
-    domain = next((v for k, v in TECH_DOMAIN.items() if k in text), None)
-    if role:
-        inferred = ROLE_DOMAIN_TO_TITLE.get(
-            (role, domain),
-            ROLE_DOMAIN_TO_TITLE.get((role, None)),
-        )
+    #  Suy luận role + domain nhưng bắt buộc phải có cả hai
+    role = next(
+        (value for keyword, value in ROLE_WORDS.items()
+         if keyword in text),
+        None,
+    )
+
+    domain = next(
+        (value for keyword, value in TECH_DOMAIN.items()
+         if keyword in text),
+        None,
+    )
+
+    if role and domain:
+        inferred = ROLE_DOMAIN_TO_TITLE.get((role, domain))
         if inferred:
             return inferred
 
-
-    for en_title, patterns in COMPILED_NON_IT_TITLE_MAP:
+    # Nhận diện Non-IT bằng pattern rõ ràng
+    for non_it_title, patterns in COMPILED_NON_IT_TITLE_MAP:
         for pat in patterns:
             if pat.search(text):
-                return en_title
+                return non_it_title
 
     return None
 def _has_it_signal(text: str) -> bool:
@@ -978,6 +984,7 @@ class RecruitmentETL:
                 df = pd.read_sql(
                     f"SELECT * FROM {SRC_TABLE} "
                     f"WHERE scraped_at::date = CURRENT_DATE and ai_processed = True", conn
+                    #  f"WHERE ai_processed = True and id in (120261,125872)", conn
                 )
                 target_date = date.today()
         print(f"   Đọc {len(df):,} rows từ {SRC_TABLE}.")
