@@ -132,12 +132,20 @@ def _enrich(df: pd.DataFrame) -> pd.DataFrame:
         .astype(str)
         .str.strip()
     )
+    level_key = (
+    df["level_clean"]
+    .fillna("")
+    .astype(str)
+    .str.strip()
+    .str.lower()
+)
 
     df["_skip_dedup"] = (
-        company_clean.eq("unknown")
-        | co_key.eq("")
-        | prov_key.eq("")
-    )
+    company_clean.eq("unknown")
+    | co_key.eq("")
+    | prov_key.eq("")
+    | level_key.eq("unknown")
+)
 
     df["_co"]   = co_key
     df["_prov"] = prov_key
